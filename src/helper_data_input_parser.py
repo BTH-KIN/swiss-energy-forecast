@@ -1,7 +1,7 @@
 import pandas as pd
 from pathlib import Path
 
-class BaselineNeuralesNetz:
+class DataInputParser:
 
     def __init__(self):
         # Basispfade einmal definieren
@@ -59,9 +59,12 @@ if __name__ == "__main__":
     path_list = [
         "EnergieUebersichtCH-2021",
         "EnergieUebersichtCH-2022",
-        "EnergieUebersichtCH-2023"
+        "EnergieUebersichtCH-2023",
+        "EnergieUebersichtCH-2024",
+        "EnergieUebersichtCH-2025",
+        "EnergieUebersichtCH-2026"
     ]
 
-    NN = BaselineNeuralesNetz()
+    NN = DataInputParser()
     NN.load_csv_data(path_list)
     NN.extract_colum("Summe endverbrauchte Energie Regelblock Schweiz")
