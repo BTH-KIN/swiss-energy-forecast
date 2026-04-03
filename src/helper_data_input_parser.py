@@ -63,8 +63,31 @@ class DataInputParser:
         print("Anzahl Lücken in den Daten:", gaps)
         return gaps
     
-    # Avg einstellen von min,h,D,W,ME,YE
-    def avg(self,avg): 
+
+    def avg(self,avg):
+        # Resamplen: Daten von feinerem auf gröberen Takt umrechnen
+        #
+        # Originaldaten: alle 15 Minuten ein Wert
+        #   00:00 → 1500000
+        #   00:15 → 1671630
+        #   00:30 → 1661251
+        #   00:45 → 1641591
+        #
+        # Nach resample("h").sum():
+        #   00:00 → 6474472  (Summe der vier 15-Min-Werte)
+        #
+        # Mögliche Werte für avg:
+        #  "min" = Minute     → Originaldaten, keine Änderung
+        #   "h"  = Stunde    → 4 Werte werden zusammengefasst
+        #   "D"  = Tag       → 96 Werte (24h × 4)
+        #   "W"  = Woche     → 672 Werte (7 Tage × 96)
+        #   "ME" = Monat     → ~2880 Werte
+        #   "YE" = Jahr      → ~35040 Werte
+        #
+        # .sum() wird hier verwendet, weil die 15-Min-Werte Teilmengen
+        # des Stundenverbrauchs sind. Der Stundenverbrauch ist die
+        # Summe der vier Viertelstundenwerte.
+
         try:
             df_serie_avg = self.df_serie.resample(avg).sum()
             return df_serie_avg
@@ -72,12 +95,17 @@ class DataInputParser:
             print(f"Fehler beim Laden: {e}")
             return 0
     
-    def data_normirung(self,df_serie):
+    def data_normirung(self,df_serie,fit = True):
         # Umwandeln der Serie in einen DataFrame, damit die Spaltennamen und der Index erhalten bleiben
         df_2d = df_serie.to_frame()
+
+        if fit:
+            # Normalisierung der Daten mit MinMaxScaler
+            array_norm_data = self.scaler.fit_transform(df_2d)
         
-        # Normalisierung der Daten mit MinMaxScaler
-        array_norm_data = self.scaler.fit_transform(df_2d)
+        else:
+            # Normalisierung der Daten mit MinMaxScaler (ohne fit, z.B. für Validation/Test)
+            array_norm_data = self.scaler.transform(df_2d)
         
         # Erstellen eines neuen DataFrames mit den normalisierten Daten, Beibehaltung der Spaltennamen und Index
         df_normiert = pd.DataFrame(array_norm_data, columns=df_2d.columns, index=df_2d.index )
@@ -142,6 +170,40 @@ class DataInputParser:
         y = np.array(y)
         
         return X, y
+    
+    def split_data(self, df_serie, train_end="2023", val_end="2024", test_end="2025"):
+        """
+        Teilt eine Zeitreihe in Train, Validation und Test auf.
+        
+        Parameter:
+        - df_serie:  Pandas Series mit Datetime-Index (z.B. Stundendaten)
+        - train_end: Letztes Jahr für Training   (inklusiv)
+        - val_end:   Letztes Jahr für Validation  (inklusiv)
+        - test_end:  Letztes Jahr für Test        (inklusiv)
+        
+        Rückgabe:
+        - train, val, test: Drei Pandas Series
+        
+        Aufteilung mit Defaultwerten:
+        |-- Train: 2021-2023 --|-- Val: 2024 --|-- Test: 2025 --|
+        |   3 Jahre (~60%)     |  1 Jahr (~20%) |  1 Jahr (~20%) |
+        """
+        
+        # Daten bis Ende 2023 → Training
+        # Pandas versteht "2023" als "alles im Jahr 2023" dank Datetime-Index
+        train = df_serie[: train_end]
+        
+        # Daten von Anfang 2024 bis Ende 2024 → Validation
+        # val_start ist das Jahr NACH train_end
+        val_start = str(int(train_end) + 1)
+        val = df_serie[val_start : val_end]
+        
+        # Daten von Anfang 2025 bis Ende 2025 → Test
+        # test_start ist das Jahr NACH val_end
+        test_start = str(int(val_end) + 1)
+        test = df_serie[test_start : test_end]
+        
+        return train, val, test
 
 if __name__ == "__main__":
     # Lilste der Dateien, die geladen werden sollen (ohne .csv-Endung)
@@ -163,9 +225,10 @@ if __name__ == "__main__":
     print("3: extract_colum      - Spalte extrahieren")
     print("4: finde_gaps         - Lücken zählen")
     print("5: avg                - Resampling (h)")
-    print("6: data_normirung     - Normalisierung")
-    print("7: data_rücknormirung - Rücknormalisierung")
-    print("8: create_sequences   - Sequenzen erstellen")
+    print("6: split_data         - Daten aufteilen (Train/Val/Test)")
+    print("7: data_normirung     - Normalisierung")
+    print("8: data_rücknormirung - Rücknormalisierung")
+    print("9: create_sequences   - Sequenzen erstellen")
     auswahl = input("Test eingeben: ").strip()
 
     data = DataInputParser()
@@ -198,10 +261,26 @@ if __name__ == "__main__":
         data.load_csv_data(FILE_LIST)
         data.extract_colum(COLUM)
         data_avg = data.avg("h")
+        train, val, test = data.split_data(data_avg)
+        # Kontrollausgabe: Wie viele Datenpunkte pro Teil?
+        total = len(train) + len(val) + len(test)
+        print(f"Train:      {len(train):>6} Werte  ({len(train)/total*100:.1f}%)")
+        print(f"Validation: {len(val):>6} Werte  ({len(val)/total*100:.1f}%)")
+        print(f"Test:       {len(test):>6} Werte  ({len(test)/total*100:.1f}%)")
+        print(f"Gesamt:     {total:>6} Werte")
+        # Zeitbereiche ausgeben zur Kontrolle
+        print(f"\nTrain:      {train.index[0]}  →  {train.index[-1]}")
+        print(f"Validation: {val.index[0]}  →  {val.index[-1]}")
+        print(f"Test:       {test.index[0]}  →  {test.index[-1]}")
+
+    elif auswahl == "7":
+        data.load_csv_data(FILE_LIST)
+        data.extract_colum(COLUM)
+        data_avg = data.avg("h")
         data_norm = data.data_normirung(data_avg)
         print(data_norm.head(10))
 
-    elif auswahl == "7":
+    elif auswahl == "8":
         data.load_csv_data(FILE_LIST)
         data.extract_colum(COLUM)
         data_avg = data.avg("h")
@@ -209,7 +288,7 @@ if __name__ == "__main__":
         data_rueck = data.data_rücknormirung(data_norm.values, data_norm.index, data_norm.columns.tolist())
         print(data_rueck.head(10))
 
-    elif auswahl == "8":
+    elif auswahl == "9":
         data.load_csv_data(FILE_LIST)
         data.extract_colum(COLUM)
         data_avg = data.avg("h")
