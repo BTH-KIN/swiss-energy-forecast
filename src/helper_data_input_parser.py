@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 from pathlib import Path
 from sklearn.preprocessing import MinMaxScaler
 
@@ -92,6 +93,56 @@ class DataInputParser:
 
         return df_rücknormiert
 
+    def create_sequences(self, data, lookback=168, horizon=24):
+        """
+        Erzeugt Trainingssequenzen aus einer Zeitreihe.
+        
+        Parameter:
+        - data:     1D numpy-Array mit normalisierten Werten
+        - lookback: Wie viele Stunden in die Vergangenheit schauen (Input)
+        - horizon:  Wie viele Stunden in die Zukunft vorhersagen (Output)
+        
+        Rückgabe:
+        - X: numpy-Array mit Shape (Anzahl_Sequenzen, lookback)
+        - y: numpy-Array mit Shape (Anzahl_Sequenzen, horizon)
+        """
+        
+        # Leere Listen zum Sammeln der Sequenzen
+        X = []
+        y = []
+        
+        # Berechne, wie viele Fenster reinpassen
+        # Beispiel: 1000 Datenpunkte, lookback=168, horizon=24
+        # → 1000 - 168 - 24 = 808 Fenster möglich
+        stop = len(data) - lookback - horizon
+        
+        # Schleife: Schiebe das Fenster von Position 0 bis stop
+        for i in range(stop):
+            
+            # X-Sequenz: Von Position i bis i+lookback (lookback Werte)
+            # Beispiel i=0: data[0:168]   → die ersten 168 Stunden
+            # Beispiel i=1: data[1:169]   → Stunde 1 bis 168
+            # Beispiel i=2: data[2:170]   → Stunde 2 bis 169
+            x_sequence = data[i : i + lookback]
+            
+            # y-Sequenz: Direkt nach der X-Sequenz, horizon Werte lang
+            # Beispiel i=0: data[168:192] → Stunde 168 bis 191
+            # Beispiel i=1: data[169:193] → Stunde 169 bis 192
+            # Beispiel i=2: data[170:194] → Stunde 170 bis 193
+            y_sequence = data[i + lookback : i + lookback + horizon]
+            
+            # Sequenzen in die Listen anfügen
+            X.append(x_sequence)
+            y.append(y_sequence)
+        
+        # Listen in numpy-Arrays umwandeln
+        # X bekommt Shape (808, 168) → 808 Beispiele, je 168 Eingabewerte
+        # y bekommt Shape (808, 24)  → 808 Beispiele, je 24 Zielwerte
+        X = np.array(X)
+        y = np.array(y)
+        
+        return X, y
+
 if __name__ == "__main__":
     # Lilste der Dateien, die geladen werden sollen (ohne .csv-Endung)
     FILE_LIST = [
@@ -114,6 +165,7 @@ if __name__ == "__main__":
     print("5: avg                - Resampling (h)")
     print("6: data_normirung     - Normalisierung")
     print("7: data_rücknormirung - Rücknormalisierung")
+    print("8: create_sequences   - Sequenzen erstellen")
     auswahl = input("Test eingeben: ").strip()
 
     data = DataInputParser()
@@ -156,6 +208,18 @@ if __name__ == "__main__":
         data_norm = data.data_normirung(data_avg)
         data_rueck = data.data_rücknormirung(data_norm.values, data_norm.index, data_norm.columns.tolist())
         print(data_rueck.head(10))
+
+    elif auswahl == "8":
+        data.load_csv_data(FILE_LIST)
+        data.extract_colum(COLUM)
+        data_avg = data.avg("h")
+        data_norm = data.data_normirung(data_avg)
+        norm_values = data_norm.values.flatten()
+        X, y = data.create_sequences(norm_values, lookback=168, horizon=24)
+        print(f"X Shape: {X.shape}  → (Anzahl Sequenzen, lookback)")
+        print(f"y Shape: {y.shape}  → (Anzahl Sequenzen, horizon)")
+        print(f"Erste X-Sequenz (erste 5 Werte): \n{X[0][:5]}")
+        print(f"Erstes y-Ziel   (alle 24 Werte): \n{y[0]}")
 
     else:
         print(f"Unbekannte Auswahl: {auswahl}")
