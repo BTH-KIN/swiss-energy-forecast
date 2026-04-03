@@ -112,14 +112,34 @@ class DataInputParser:
 
         return df_normiert
 
-    def data_rücknormirung(self,data_normiert,timestamps,colum_name):
 
-        array_data = self.scaler.inverse_transform(data_normiert)
+    def data_rücknormirung(self, data_normiert, timestamps=None, colum_name=None):
+        # Shape merken, z.B. (8568, 24) oder (8568, 1)
+        original_shape = data_normiert.shape
 
-        # Erstellen eines neuen DataFrames mit den rücknormalisierten Daten, Beibehaltung der Spaltennamen und Index
-        df_rücknormiert = pd.DataFrame(array_data, columns=colum_name, index=timestamps)
+        # Prüfen: Hat die Eingabe mehr als 1 Spalte?
+        # Wenn ja (z.B. 24 Spalten bei Vorhersagen), müssen wir reshapen
+        # weil der Scaler nur mit 1 Spalte gefittet wurde
+        if len(original_shape) > 1 and original_shape[1] > 1:
+            # (8568, 24) → (205632,) → (205632, 1)
+            flat = data_normiert.flatten().reshape(-1, 1)
+            # Rücktransformieren mit der 1-Spalten-Form
+            flat_real = self.scaler.inverse_transform(flat)
+            # Zurück zur Originalform: (205632, 1) → (8568, 24)
+            array_data = flat_real.reshape(original_shape)
+        else:
+            # Normalfall: (n, 1) → direkt rücktransformieren
+            array_data = self.scaler.inverse_transform(data_normiert)
 
-        return df_rücknormiert
+        # Wenn timestamps und colum_name gegeben → DataFrame zurückgeben
+        # (für den bisherigen Gebrauch im Test-Menü)
+        if timestamps is not None and colum_name is not None:
+            df_rücknormiert = pd.DataFrame(array_data, columns=colum_name, index=timestamps)
+            return df_rücknormiert
+        
+        # Sonst: nur das numpy-Array zurückgeben
+        # (für Vorhersagen, wo wir keinen Index brauchen)
+        return array_data
 
     def create_sequences(self, data, lookback=168, horizon=24):
         """
@@ -204,6 +224,35 @@ class DataInputParser:
         test = df_serie[test_start : test_end]
         
         return train, val, test
+
+    def date_to_index(self, date_string, lookback=168):
+        """
+        Wandelt ein Datum in einen Sequenz-Index um.
+        
+        Args:
+            date_string: Datum als String, z.B. "2025-06-15 14:00"
+            lookback:    Lookback-Wert (default: 168)
+        
+        Returns:
+            Index für die Sequenz-Arrays (X_test, y_test, predictions)
+        """
+        # String in Datetime umwandeln
+        target = pd.to_datetime(date_string)
+        
+        # Position im Test-Set finden
+        # searchsorted findet die Stelle wo target einsortiert wäre
+        pos = self.test_timestamps.searchsorted(target)
+        
+        # Die Vorhersage für Sequenz i startet bei Zeitstempel i + lookback
+        # Also: wenn wir die Vorhersage AB einem Datum wollen,
+        # müssen wir lookback abziehen
+        index = pos - lookback
+        
+        if index < 0:
+            print(f"Datum zu früh! Frühestes Datum: {self.test_timestamps[lookback]}")
+            return 0
+        
+        return index
     
     def prepare_pipeline(self, file_list, column, lookback=168, horizon=24, avg="h",train_end="2023", val_end="2024", test_end="2025"):
         """
@@ -234,6 +283,9 @@ class DataInputParser:
         
         # Aufteilen der Daten in Train, Validation und Test basierend auf den Jahren
         train, val, test = self.split_data(df_hourly, train_end, val_end, test_end)
+
+        # Zeitstempel der Testdaten merken, damit wir sie später für die Rücknormalisierung der Vorhersagen verwenden können
+        self.test_timestamps = test.index
 
         #  Train-Daten normalisieren mit fit=True → Scaler lernt die Min/Max-Werte aus den Trainingsdaten
         train_norm = self.data_normirung(train, fit=True)

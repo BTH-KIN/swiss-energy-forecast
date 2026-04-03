@@ -6,6 +6,8 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Input
+from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.models import load_model
 
 
 class EnergyModel:
@@ -92,31 +94,54 @@ class EnergyModel:
             metrics=["mae"]
         ) 
     
-    def train_model(self, X_train, y_train, X_val, y_val, epochs=50, batch_size=32):
+    def train_model(self, X_train, y_train, X_val, y_val, epochs=50, batch_size=32, patience=10, min_delta=0.0001, use_early_stop=True):
         """
         Trainiert das Modell mit den Daten.
-        
+
         Parameter:
         - X_train, y_train: Trainingsdaten (numpy-Arrays)
         - X_val, y_val:     Validierungsdaten (numpy-Arrays)
         - epochs:           Wie oft das Modell ALLE Daten durchgeht
         - batch_size:       Wie viele Sequenzen gleichzeitig verarbeitet werden
-        
+        - patience:         Wie viele Epochen ohne Verbesserung bis EarlyStopping abbricht
+        - use_early_stop:   Ob EarlyStopping aktiviert werden soll (Standard: True)
+
         Rückgabe:
         - history: Trainingsprotokoll (Loss und Metriken pro Epoch)
         """
+
+        # Callback-Liste aufbauen
+        callbacks = []
+
+        # EarlyStopping bricht das Training ab, wenn keine Verbesserung mehr stattfindet
+        #
+        # Was passiert:
+        #   - monitor:              Beobachtet den Validierungsverlust (val_loss)
+        #   - patience:             Wartet noch 'patience' Epochen, bevor abgebrochen wird
+        #   - restore_best_weights: Lädt danach die Gewichte der besten Epoche wieder
+        if use_early_stop:
+                early_stop = EarlyStopping(
+                    monitor="val_loss",
+                    patience=patience,
+                    min_delta=min_delta,
+                    restore_best_weights=True,
+                )
+                callbacks.append(early_stop)
+
+
         # model.fit() startet das eigentliche Training
         #
         # Was passiert pro Epoch:
-        #   1. Modell bekommt batch_size Sequenzen (z.B. 32 Stück)
-        #   2. Macht Vorhersagen für alle 32
+        #   1. Modell bekommt batch_size Sequenzen
+        #   2. Macht Vorhersagen für alle Sequenzen im Batch
         #   3. Berechnet den Fehler (Loss) zwischen Vorhersage und Wahrheit
         #   4. Passt die Gewichte an, um den Fehler zu verringern
         #   5. Wiederholt 1-4 bis ALLE Trainingssequenzen durch sind
         #   → Das ist 1 Epoch
         #
-        # epochs=50 bedeutet: Das ganze 50 mal wiederholen
-        # Mit jedem Epoch wird das Modell (hoffentlich) besser
+        # epochs:
+        #   Wie oft das Modell alle Daten durchgeht (übergeben als Parameter)
+        #   Mit jedem Epoch wird das Modell (hoffentlich) besser
         #
         # validation_data=(X_val, y_val):
         #   Nach jedem Epoch testet Keras das Modell auf den Val-Daten
@@ -124,18 +149,65 @@ class EnergyModel:
         #   Es zeigt dir nur: "So gut bin ich auf ungesehenen Daten"
         #   Wenn val_loss steigt während train_loss sinkt → Overfitting
         #
-        # batch_size=32:
-        #   Warum nicht alle 26'000 Sequenzen auf einmal?
+        # batch_size:
+        #   Warum nicht alle Sequenzen auf einmal?
         #   → Zu viel Speicher, und das Modell lernt schlechter
         #   Kleine Batches = mehr Updates pro Epoch = besseres Lernen
-        #   32 ist ein bewährter Standardwert
+        #
+        # callbacks:
+        #   Liste aller aktiven Callbacks, die Keras nach jeder Epoch aufruft
+        #   → Enthält early_stop, falls use_early_stop=True gesetzt wurde
         self.history = self.model.fit(
             X_train, y_train,
             validation_data=(X_val, y_val),
             epochs=epochs,
             batch_size=batch_size,
+            callbacks=callbacks,
         )
         return self.history
+    
+    def predict(self, X_test):
+        """
+        Generiert Vorhersagen für die Testdaten.
+        
+        Parameter:
+        - X_test: numpy-Array mit Shape (Anzahl_Sequenzen, lookback)
+        
+        Rückgabe:
+        - predictions: numpy-Array mit Shape (Anzahl_Sequenzen, horizon)
+        """
+        # model.predict() schickt alle Testsequenzen durch das Netzwerk
+        # Jede Sequenz (168 Stunden) rein → 24 Stunden Vorhersage raus
+        #
+        # X_test Shape:      (8568, 168) → 8568 Testsequenzen
+        # predictions Shape: (8568, 24)  → 8568 Vorhersagen, je 24 Stunden
+        #
+        # Die Werte sind noch normalisiert (zwischen 0 und 1)!
+        self.predictions = self.model.predict(X_test)
+        return self.predictions
+    
+    def save_model(self, path="model_dense.keras"):
+        """Speichert das trainierte Modell als Datei.
+        
+        Args:
+            path: Dateipfad zum Speichern (default: model_dense.keras)
+        """
+        # .keras ist das neue Standardformat von Keras
+        # Es speichert alles: Architektur, Gewichte, Optimizer-Zustand
+        # Die Datei ist ca. 100-200 KB gross bei deinem kleinen Modell
+        self.model.save(path)
+        print(f"Modell gespeichert: {path}")
+    
+    def load_model(self, path="model_dense.keras"):
+        """Lädt ein gespeichertes Modell.
+        
+        Args:
+            path: Dateipfad zum Laden (default: model_dense.keras)
+        """
+              
+        # load_model() lädt die gesamte Modell-Datei, inklusive Architektur und Gewichte
+        self.model = load_model(path)
+        print(f"Modell geladen: {path}")
     
     def show_summary(self):
         # summary() zeigt die Architektur des Modells:
@@ -153,6 +225,8 @@ class EnergyModel:
 if __name__ == "__main__":
 
     from src.helper_data_input_parser import DataInputParser
+    from src.helper_csv_data_plot import CSVPlotter
+    
     
     # ── Konfiguration ──
     FILE_LIST = [
@@ -168,8 +242,19 @@ if __name__ == "__main__":
     HORIZON = 24        # 1 Tag vorhersagen
     NEURONS_L1 = 64     # Neuronen im ersten Hidden Layer
     NEURONS_L2 = 32     # Neuronen im zweiten Hidden Layer
-    EPOCHS = 50         # Wie oft das Modell ALLE Daten durchgeht
+    EPOCHS = 200        # Wie oft das Modell ALLE Daten durchgeht
     BATCH_SIZE = 32     # Wie viele Sequenzen gleichzeitig verarbeitet werden
+    PATIENCE = 10       # Wie viele Epochen ohne Verbesserung bis EarlyStopping abbricht
+    MIN_DELTA = 0.0001  # Mindestverbesserung, damit EarlyStopping nicht abbricht
+    USE_EARLY_STOP = True # Ob EarlyStopping aktiviert werden soll (Standard: True)
+    
+    TRAIN_NEW_MODEL = True          # True = neues Modell trainieren, False = gespeichertes Modell laden
+    MODEL_PATH = "model_dense.keras" # Pfad zum Speichern/Laden des Modells
+
+    PREDICTION_DATE = "2025-06-15 14:00" # Datum für die Vorhersage (nur relevant, wenn TRAIN_NEW_MODEL=False)
+
+    # ── Plotter erstellen ──
+    plotter = CSVPlotter()
 
     # ── Daten vorbereiten ──
     parser = DataInputParser()
@@ -183,19 +268,55 @@ if __name__ == "__main__":
     # ── Modell erstellen ──
     energy_model = EnergyModel(lookback=LOOKBACK, horizon=HORIZON, neurons_l1=NEURONS_L1, neurons_l2=NEURONS_L2)
 
-    # ── Modell bauen (Architektur definieren) ──
-    energy_model.build_model()
+    if TRAIN_NEW_MODEL:
+        
+        # ── Modell bauen (Architektur definieren) ──
+        energy_model.build_model()
 
-    # ── Modell kompilieren (Lernstrategie festlegen) ──
-    energy_model.compile_model()
+        # ── Modell kompilieren (Lernstrategie festlegen) ──
+        energy_model.compile_model()
 
-    # ── Zusammenfassung anzeigen ──
-    energy_model.show_summary()
+        # ── Zusammenfassung anzeigen ──
+        energy_model.show_summary()
 
-    print("\nStarte Training...")
-    history = energy_model.train_model(
-        X_train, y_train,
-        X_val, y_val,
-        epochs=EPOCHS,
-        batch_size=BATCH_SIZE,
-    )
+        # ── Training starten ──
+        print("\nStarte Training...")
+        history = energy_model.train_model(
+            X_train, y_train,
+            X_val, y_val,
+            epochs=EPOCHS,
+            batch_size=BATCH_SIZE,
+            patience=PATIENCE,
+            min_delta=MIN_DELTA,
+            use_early_stop=USE_EARLY_STOP,
+        )
+
+        # Modell speichern für später
+        energy_model.save_model(MODEL_PATH)
+
+        # ── Trainingsverlauf plotten ──
+        plotter.plot_training_history(history)
+    
+    else:
+        # ── Gespeichertes Modell laden ──
+        energy_model.load_model(MODEL_PATH)
+
+        # ── Vorhersagen generieren ── 
+        predictions_norm = energy_model.predict(X_test)
+
+        # ── Vorhersagen und echte Werte zurück in Originalskala transformieren ──
+        predictions_real = parser.data_rücknormirung(predictions_norm)
+        y_test_real = parser.data_rücknormirung(y_test)
+
+
+        # ── Vorhersage für ein bestimmtes Datum plotten ──
+        plotter.plot_prediction(y_test_real, predictions_real, start_date="2025-06-15 14:00", timestamps=parser.test_timestamps, lookback=LOOKBACK, )
+
+        # ── Vorhersage über mehrere Monate plotten ──
+        plotter.plot_predictions_months(y_test_real, predictions_real, timestamps=parser.test_timestamps, lookback=LOOKBACK,)
+
+        # ── Vorhersage über eine Woche plotten ──
+        plotter.plot_prediction_week(y_test_real, predictions_real, timestamps=parser.test_timestamps, start_date="2025-06-02", lookback=LOOKBACK, )
+
+        # ── Vorhersage über mehrere Wochen und Jahre plotten ──
+        plotter.plot_prediction_weeks_year(y_test_real, predictions_real, timestamps=parser.test_timestamps, lookback=LOOKBACK,)
