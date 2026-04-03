@@ -204,6 +204,57 @@ class DataInputParser:
         test = df_serie[test_start : test_end]
         
         return train, val, test
+    
+    def prepare_pipeline(self, file_list, column, lookback=168, horizon=24, avg="h",train_end="2023", val_end="2024", test_end="2025"):
+        """
+        Führt die komplette Datenaufbereitung durch.
+        
+        Parameter:
+        - file_list: Liste der CSV-Dateinamen (ohne .csv)
+        - column:    Name der Zielspalte
+        - lookback:  Eingabelänge in Stunden (default: 168 = 7 Tage)
+        - horizon:   Vorhersagelänge in Stunden (default: 24 = 1 Tag)
+        - avg:       Resampling-Intervall (default: "h" = stündlich) mögliche Werte: "min", "h", "D", "W", "ME", "YE"
+        - train_end:  Letztes Jahr für Training (default: "2023")
+        - val_end:    Letztes Jahr für Validation (default: "2024")
+        - test_end:   Letztes Jahr für Test (default: "2025")
+        
+        Rückgabe:
+        - X_train, y_train, X_val, y_val, X_test, y_test (numpy-Arrays)
+        """
+        # Laden der Daten aus den CSV-Dateien
+        self.load_csv_data(file_list)
+
+        # Extrahieren der relevanten Spalte als Pandas Series
+        self.extract_colum(column)
+
+        # Resampling der Daten auf stündliche Werte (oder andere Intervalle je nach avg)
+        df_hourly = self.avg(avg)
+
+        
+        # Aufteilen der Daten in Train, Validation und Test basierend auf den Jahren
+        train, val, test = self.split_data(df_hourly, train_end, val_end, test_end)
+
+        #  Train-Daten normalisieren mit fit=True → Scaler lernt die Min/Max-Werte aus den Trainingsdaten
+        train_norm = self.data_normirung(train, fit=True)
+
+        # Validation und Test normalisieren mit fit=False → Scaler verwendet die Min/Max-Werte aus dem Training, um Val/Test zu transformieren
+        val_norm = self.data_normirung(val, fit=False)
+        test_norm = self.data_normirung(test, fit=False)
+
+        # Erstellen der Sequenzen für Train, Validation und Test
+        # Die create_sequences-Funktion erwartet 1D-Arrays, daher wird .values.flatten() verwendet, um die Serie in ein 1D-Array umzuwandeln
+        X_train, y_train = self.create_sequences(
+            train_norm.values.flatten(), lookback, horizon
+        )
+        X_val, y_val = self.create_sequences(
+            val_norm.values.flatten(), lookback, horizon
+        )
+        X_test, y_test = self.create_sequences(
+            test_norm.values.flatten(), lookback, horizon
+        )
+
+        return X_train, y_train, X_val, y_val, X_test, y_test
 
 if __name__ == "__main__":
     # Lilste der Dateien, die geladen werden sollen (ohne .csv-Endung)
@@ -229,6 +280,7 @@ if __name__ == "__main__":
     print("7: data_normirung     - Normalisierung")
     print("8: data_rücknormirung - Rücknormalisierung")
     print("9: create_sequences   - Sequenzen erstellen")
+    print("10: prepare_pipeline  - Komplette Pipeline")
     auswahl = input("Test eingeben: ").strip()
 
     data = DataInputParser()
@@ -299,6 +351,19 @@ if __name__ == "__main__":
         print(f"y Shape: {y.shape}  → (Anzahl Sequenzen, horizon)")
         print(f"Erste X-Sequenz (erste 5 Werte): \n{X[0][:5]}")
         print(f"Erstes y-Ziel   (alle 24 Werte): \n{y[0]}")
+    
+    elif auswahl == "10":
+        X_train, y_train, X_val, y_val, X_test, y_test = data.prepare_pipeline(
+            file_list=FILE_LIST,
+            column=COLUM,
+            lookback=168,
+            horizon=24,
+        )
+        print(f"\nErgebnis:")
+        print(f"  X_train (Zeilen, Spalten): {X_train.shape}  y_train (Zeilen, Spalten): {y_train.shape}")
+        print(f"  X_val   (Zeilen, Spalten): {X_val.shape}    y_val   (Zeilen, Spalten): {y_val.shape}")
+        print(f"  X_test  (Zeilen, Spalten): {X_test.shape}   y_test  (Zeilen, Spalten): {y_test.shape}")
+
 
     else:
         print(f"Unbekannte Auswahl: {auswahl}")
