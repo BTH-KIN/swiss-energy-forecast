@@ -5,14 +5,14 @@ os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Input
+from tensorflow.keras.layers import LSTM, Dense, Input
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.models import load_model
 
 
-class EnergyModel:
+class EnergyModelLSTM:
 
-    def __init__(self, lookback=168, horizon=24,neurons_l1=64, neurons_l2=32):
+    def __init__(self, lookback=168, horizon=24, neurons_l1=64, neurons_l2=32):
         # Parameter als Klassenattribute speichern
         # damit alle Methoden darauf zugreifen können
         #
@@ -21,8 +21,8 @@ class EnergyModel:
         self.lookback = lookback
         self.horizon = horizon
 
-        # Neuronen pro Hidden Layer — zum Experimentieren anpassbar
-        # Grössere Werte = Modell kann komplexere Muster lernen
+        # Neuronen pro LSTM-Layer — zum Experimentieren anpassbar
+        # Grössere Werte = Modell kann komplexere zeitliche Muster lernen
         #                  aber braucht mehr Rechenzeit
         #                  und kann "auswendig lernen" (Overfitting)
         # Kleinere Werte = schneller, aber vielleicht zu simpel
@@ -32,30 +32,37 @@ class EnergyModel:
         # Modell wird erst in build_model() erstellt
         # Hier nur auf None setzen, damit es als Attribut existiert
         self.model = None
-    
+
     def build_model(self):
         # Neues Sequential-Modell erstellen
         # Sequential = Schichten kommen nacheinander (wie eine Röhre)
         self.model = Sequential()
 
         # ── Input Layer ──
-        # Input(shape=(self.lookback,)) definiert die Form der Eingabe.
-        # shape=(self.lookback,) → jede Eingabe hat genau lookback Werte (z.B. 168).
-        # Das Komma macht daraus ein Tuple: (168,) statt nur die Zahl 168 —
-        # Keras erwartet immer ein Tuple als Shape-Angabe.
-        self.model.add(Input(shape=(self.lookback,)))
+        # LSTM erwartet 3D-Eingabe: (samples, timesteps, features)
+        # shape=(self.lookback, 1):
+        #   - lookback    = Anzahl Zeitschritte pro Sequenz (z.B. 168 Stunden)
+        #   - 1           = eine Messgrösse pro Zeitschritt (Energieverbrauch)
+        # Beim Dense-Netz war shape=(lookback,) — dort sind die Zeitschritte
+        # einfach nebeneinander als flacher Vektor.
+        # Beim LSTM behandelt Keras jeden der lookback Werte als eigenen
+        # Zeitschritt, deshalb das extra ,1 am Ende.
+        self.model.add(Input(shape=(self.lookback, 1)))
 
-        # ── Hidden Layer 1 ──
-        # Dense(neurons_l1) → vollvernetzter Layer mit neurons_l1 Neuronen.
-        # Kein shape nötig — Keras leitet die Eingabegrösse vom Input-Layer ab.
-        # activation="relu": negative Werte → 0, positive bleiben erhalten.
-        self.model.add(Dense(self.neurons_l1, activation="relu"))
+        # ── LSTM Layer 1 ──
+        # LSTM(neurons_l1) → LSTM-Schicht mit neurons_l1 Einheiten.
+        # return_sequences=True: gibt für jeden Zeitschritt einen Output zurück.
+        # Das ist nötig, damit LSTM Layer 2 ebenfalls eine Sequenz als Input
+        # bekommt — ohne return_sequences=True würde nur der letzte Zeitschritt
+        # weitergegeben, und der zweite LSTM-Layer hätte keine Sequenz mehr.
+        self.model.add(LSTM(self.neurons_l1, return_sequences=True))
 
-        # ── Hidden Layer 2 ──
-        # Dense(neurons_l2) → vollvernetzter Layer mit neurons_l2 Neuronen.
-        # Kein shape nötig — Keras leitet die Eingabegrösse vom vorherigen Layer ab.
-        # activation="relu": negative Werte → 0, positive bleiben erhalten.
-        self.model.add(Dense(self.neurons_l2, activation="relu"))
+        # ── LSTM Layer 2 ──
+        # LSTM(neurons_l2) → zweite LSTM-Schicht mit neurons_l2 Einheiten.
+        # return_sequences=False (Standard): gibt nur den letzten Zeitschritt
+        # zurück — ein Vektor der Grösse neurons_l2.
+        # Das ist korrekt hier, weil danach ein normaler Dense-Output-Layer folgt.
+        self.model.add(LSTM(self.neurons_l2, return_sequences=False))
 
         # ── Output Layer: horizon Neuronen ──
         # self.horizon = 24 → 24 Ausgabewerte (eine pro Stunde)
@@ -92,8 +99,8 @@ class EnergyModel:
             optimizer="adam",
             loss="mse",
             metrics=["mae"]
-        ) 
-    
+        )
+
     def train_model(self, X_train, y_train, X_val, y_val, epochs=50, batch_size=32, patience=10, min_delta=0.0001, use_early_stop=True):
         """
         Trainiert das Modell mit den Daten.
@@ -104,11 +111,24 @@ class EnergyModel:
         - epochs:           Wie oft das Modell ALLE Daten durchgeht
         - batch_size:       Wie viele Sequenzen gleichzeitig verarbeitet werden
         - patience:         Wie viele Epochen ohne Verbesserung bis EarlyStopping abbricht
+        - min_delta:        Mindestverbesserung, damit EarlyStopping nicht abbricht
         - use_early_stop:   Ob EarlyStopping aktiviert werden soll (Standard: True)
 
         Rückgabe:
         - history: Trainingsprotokoll (Loss und Metriken pro Epoch)
+
+        Wichtig — Reshape:
+        Das Dense-Netz erwartet X mit Shape (n, lookback).
+        Das LSTM erwartet X mit Shape (n, lookback, 1).
+        Der DataInputParser liefert (n, lookback) — deshalb wird hier
+        automatisch ein reshape(..., 1) durchgeführt, bevor die Daten
+        ins Modell gehen. So bleibt die Pipeline identisch zum Dense-Netz.
         """
+
+        # Reshape: (n, lookback) → (n, lookback, 1)
+        # LSTM braucht eine Tiefendimension (features), auch wenn es nur 1 ist
+        X_train = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
+        X_val   = X_val.reshape((X_val.shape[0],   X_val.shape[1],   1))
 
         # Callback-Liste aufbauen
         callbacks = []
@@ -120,14 +140,13 @@ class EnergyModel:
         #   - patience:             Wartet noch 'patience' Epochen, bevor abgebrochen wird
         #   - restore_best_weights: Lädt danach die Gewichte der besten Epoche wieder
         if use_early_stop:
-                early_stop = EarlyStopping(
-                    monitor="val_loss",
-                    patience=patience,
-                    min_delta=min_delta,
-                    restore_best_weights=True,
-                )
-                callbacks.append(early_stop)
-
+            early_stop = EarlyStopping(
+                monitor="val_loss",
+                patience=patience,
+                min_delta=min_delta,
+                restore_best_weights=True,
+            )
+            callbacks.append(early_stop)
 
         # model.fit() startet das eigentliche Training
         #
@@ -139,24 +158,11 @@ class EnergyModel:
         #   5. Wiederholt 1-4 bis ALLE Trainingssequenzen durch sind
         #   → Das ist 1 Epoch
         #
-        # epochs:
-        #   Wie oft das Modell alle Daten durchgeht (übergeben als Parameter)
-        #   Mit jedem Epoch wird das Modell (hoffentlich) besser
-        #
         # validation_data=(X_val, y_val):
         #   Nach jedem Epoch testet Keras das Modell auf den Val-Daten
         #   Das Modell lernt NICHT von Val-Daten!
         #   Es zeigt dir nur: "So gut bin ich auf ungesehenen Daten"
         #   Wenn val_loss steigt während train_loss sinkt → Overfitting
-        #
-        # batch_size:
-        #   Warum nicht alle Sequenzen auf einmal?
-        #   → Zu viel Speicher, und das Modell lernt schlechter
-        #   Kleine Batches = mehr Updates pro Epoch = besseres Lernen
-        #
-        # callbacks:
-        #   Liste aller aktiven Callbacks, die Keras nach jeder Epoch aufruft
-        #   → Enthält early_stop, falls use_early_stop=True gesetzt wurde
         self.history = self.model.fit(
             X_train, y_train,
             validation_data=(X_val, y_val),
@@ -165,50 +171,52 @@ class EnergyModel:
             callbacks=callbacks,
         )
         return self.history
-    
+
     def predict(self, X_test):
         """
         Generiert Vorhersagen für die Testdaten.
-        
+
         Parameter:
         - X_test: numpy-Array mit Shape (Anzahl_Sequenzen, lookback)
-        
+                  wird intern auf (Anzahl_Sequenzen, lookback, 1) reshapet
+
         Rückgabe:
         - predictions: numpy-Array mit Shape (Anzahl_Sequenzen, horizon)
         """
+        # Reshape: (n, lookback) → (n, lookback, 1)
+        X_test = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
+
         # model.predict() schickt alle Testsequenzen durch das Netzwerk
-        # Jede Sequenz (168 Stunden) rein → 24 Stunden Vorhersage raus
+        # Jede Sequenz (168 Zeitschritte) rein → 24 Stunden Vorhersage raus
         #
-        # X_test Shape:      (8568, 168) → 8568 Testsequenzen
-        # predictions Shape: (8568, 24)  → 8568 Vorhersagen, je 24 Stunden
+        # X_test Shape:      (8568, 168, 1) → 8568 Testsequenzen
+        # predictions Shape: (8568, 24)     → 8568 Vorhersagen, je 24 Stunden
         #
         # Die Werte sind noch normalisiert (zwischen 0 und 1)!
         self.predictions = self.model.predict(X_test)
         return self.predictions
-    
-    def save_model(self, path="model_dense.keras"):
+
+    def save_model(self, path="model_lstm.keras"):
         """Speichert das trainierte Modell als Datei.
-        
+
         Args:
-            path: Dateipfad zum Speichern (default: model_dense.keras)
+            path: Dateipfad zum Speichern (default: model_lstm.keras)
         """
         # .keras ist das neue Standardformat von Keras
         # Es speichert alles: Architektur, Gewichte, Optimizer-Zustand
-        # Die Datei ist ca. 100-200 KB gross bei deinem kleinen Modell
         self.model.save(path)
         print(f"Modell gespeichert: {path}")
-    
-    def load_model(self, path="model_dense.keras"):
+
+    def load_model(self, path="model_lstm.keras"):
         """Lädt ein gespeichertes Modell.
-        
+
         Args:
-            path: Dateipfad zum Laden (default: model_dense.keras)
+            path: Dateipfad zum Laden (default: model_lstm.keras)
         """
-              
         # load_model() lädt die gesamte Modell-Datei, inklusive Architektur und Gewichte
         self.model = load_model(path)
         print(f"Modell geladen: {path}")
-    
+
     def show_summary(self):
         # summary() zeigt die Architektur des Modells:
         # - Welche Schichten gibt es?
@@ -216,18 +224,18 @@ class EnergyModel:
         # - Wie gross ist das Modell insgesamt?
         #
         # "Parameter" = die Zahlen, die das Modell beim Training lernt
-        # Layer 1: 168 Eingaben × 64 Neuronen + 64 Bias = 10'816 Parameter
-        # Layer 2: 64 Eingaben × 32 Neuronen + 32 Bias  = 2'080 Parameter
-        # Layer 3: 32 Eingaben × 24 Neuronen + 24 Bias  = 792 Parameter
-        # Total: 13'688 Parameter
+        # LSTM Layer 1: 4 × ((168 + 64) × 64 + 64) = ca. 59'648 Parameter
+        # LSTM Layer 2: 4 × ((64  + 32) × 32 + 32) = ca. 12'416 Parameter
+        # Dense Output: 32 × 24 + 24                = ca.    792 Parameter
+        # Total: deutlich mehr als Dense, weil LSTM intern 4 Gates hat
         self.model.summary()
+
 
 if __name__ == "__main__":
 
     from src.helper_data_input_parser import DataInputParser
     from src.helper_csv_data_plot import CSVPlotter
-    
-    
+
     # ── Konfiguration ──
     FILE_LIST = [
         "EnergieUebersichtCH-2021",
@@ -240,16 +248,16 @@ if __name__ == "__main__":
 
     LOOKBACK = 168      # 7 Tage zurückschauen
     HORIZON = 24        # 1 Tag vorhersagen
-    NEURONS_L1 = 64     # Neuronen im ersten Hidden Layer
-    NEURONS_L2 = 32     # Neuronen im zweiten Hidden Layer
-    EPOCHS = 200        # Wie oft das Modell ALLE Daten durchgeht
+    NEURONS_L1 = 64     # Neuronen im ersten LSTM-Layer
+    NEURONS_L2 = 32     # Neuronen im zweiten LSTM-Layer
+    EPOCHS = 20        # Wie oft das Modell ALLE Daten durchgeht
     BATCH_SIZE = 32     # Wie viele Sequenzen gleichzeitig verarbeitet werden
     PATIENCE = 10       # Wie viele Epochen ohne Verbesserung bis EarlyStopping abbricht
     MIN_DELTA = 0.0001  # Mindestverbesserung, damit EarlyStopping nicht abbricht
     USE_EARLY_STOP = True # Ob EarlyStopping aktiviert werden soll (Standard: True)
-    
-    TRAIN_NEW_MODEL = False          # True = neues Modell trainieren, False = gespeichertes Modell laden
-    MODEL_PATH = "model_dense.keras" # Pfad zum Speichern/Laden des Modells
+
+    TRAIN_NEW_MODEL = False           # True = neues Modell trainieren, False = gespeichertes Modell laden
+    MODEL_PATH = "model_lstm.keras"  # Pfad zum Speichern/Laden des Modells
 
     PREDICTION_DATE = "2025-06-15 14:00" # Datum für die Vorhersage (nur relevant, wenn TRAIN_NEW_MODEL=False)
 
@@ -266,10 +274,10 @@ if __name__ == "__main__":
     )
 
     # ── Modell erstellen ──
-    energy_model = EnergyModel(lookback=LOOKBACK, horizon=HORIZON, neurons_l1=NEURONS_L1, neurons_l2=NEURONS_L2)
+    energy_model = EnergyModelLSTM(lookback=LOOKBACK, horizon=HORIZON, neurons_l1=NEURONS_L1, neurons_l2=NEURONS_L2)
 
     if TRAIN_NEW_MODEL:
-        
+
         # ── Modell bauen (Architektur definieren) ──
         energy_model.build_model()
 
@@ -296,27 +304,26 @@ if __name__ == "__main__":
 
         # ── Trainingsverlauf plotten ──
         plotter.plot_training_history(history)
-    
+
     else:
         # ── Gespeichertes Modell laden ──
         energy_model.load_model(MODEL_PATH)
 
-        # ── Vorhersagen generieren ── 
+        # ── Vorhersagen generieren ──
         predictions_norm = energy_model.predict(X_test)
 
         # ── Vorhersagen und echte Werte zurück in Originalskala transformieren ──
         predictions_real = parser.data_rücknormirung(predictions_norm)
         y_test_real = parser.data_rücknormirung(y_test)
 
-
         # ── Vorhersage für ein bestimmtes Datum plotten ──
-        plotter.plot_prediction(y_test_real, predictions_real, start_date="2025-06-15 14:00", timestamps=parser.test_timestamps, lookback=LOOKBACK, )
+        plotter.plot_prediction(y_test_real, predictions_real, start_date=PREDICTION_DATE, timestamps=parser.test_timestamps, lookback=LOOKBACK)
 
         # ── Vorhersage über mehrere Monate plotten ──
-        plotter.plot_predictions_months(y_test_real, predictions_real, timestamps=parser.test_timestamps, lookback=LOOKBACK,)
+        plotter.plot_predictions_months(y_test_real, predictions_real, timestamps=parser.test_timestamps, lookback=LOOKBACK)
 
         # ── Vorhersage über eine Woche plotten ──
-        plotter.plot_prediction_week(y_test_real, predictions_real, timestamps=parser.test_timestamps, start_date="2025-06-02", lookback=LOOKBACK, )
+        plotter.plot_prediction_week(y_test_real, predictions_real, timestamps=parser.test_timestamps, start_date="2025-06-02", lookback=LOOKBACK)
 
         # ── Vorhersage über mehrere Wochen und Jahre plotten ──
-        plotter.plot_prediction_weeks_year(y_test_real, predictions_real, timestamps=parser.test_timestamps, lookback=LOOKBACK,)
+        plotter.plot_prediction_weeks_year(y_test_real, predictions_real, timestamps=parser.test_timestamps, lookback=LOOKBACK)
