@@ -1,6 +1,6 @@
 # Swiss Energy Forecast
 
-Vorhersage des Stromverbrauchs der Schweiz für die nächsten 24 Stunden mittels eines neuronalen Netzes (Dense Baseline-Modell). Das Projekt basiert auf historischen Energiedaten von Swissgrid (2021–2025).
+Vorhersage des Stromverbrauchs der Schweiz für die nächsten 24 Stunden mittels eines neuronalen Netzes (Dense Baseline-Modell mit Zeitfeatures). Das Projekt basiert auf historischen Energiedaten von Swissgrid (2021–2025).
 
 ## Inhaltsverzeichnis
 
@@ -9,9 +9,11 @@ Vorhersage des Stromverbrauchs der Schweiz für die nächsten 24 Stunden mittels
 - [Installation](#installation)
 - [Daten](#daten)
 - [Pipeline](#pipeline)
+- [Feature Engineering](#feature-engineering)
 - [Modellarchitektur](#modellarchitektur)
 - [Verwendung](#verwendung)
 - [Ergebnisse](#ergebnisse)
+- [Vergleich: Ohne vs. Mit Zeitfeatures](#vergleich-ohne-vs-mit-zeitfeatures)
 - [Bekannte Limitationen](#bekannte-limitationen)
 - [Nächste Schritte](#nächste-schritte)
 
@@ -19,9 +21,9 @@ Vorhersage des Stromverbrauchs der Schweiz für die nächsten 24 Stunden mittels
 
 **Ziel:** Basierend auf den letzten 7 Tagen (168 Stunden) den Stromverbrauch der Schweiz für die nächsten 24 Stunden vorhersagen.
 
-**Ansatz:** Supervised Learning mit einem Feedforward-Netzwerk (Dense/MLP) als Baseline-Modell. Die Daten werden aus den öffentlich verfügbaren CSV-Dateien von Swissgrid geladen, aufbereitet und in Trainingssequenzen umgewandelt.
+**Ansatz:** Supervised Learning mit einem Feedforward-Netzwerk (Dense/MLP). Die Daten werden aus den öffentlich verfügbaren CSV-Dateien von Swissgrid geladen, mit zyklischen Zeitfeatures (sin/cos-Encoding) angereichert und in Trainingssequenzen umgewandelt.
 
-**Technologien:** Python, TensorFlow/Keras, Pandas, scikit-learn, Matplotlib
+**Technologien:** Python, TensorFlow/Keras, Pandas, NumPy, scikit-learn, Matplotlib
 
 ## Projektstruktur
 
@@ -43,7 +45,7 @@ swiss-energy-forecast/
 
 ## Installation
 
-Das Projekt verwendet `uv` als Paketmanager. Folgende Abhängigkeiten werden benötigt:
+Das Projekt verwendet `uv` als Paketmanager.
 
 ```bash
 # Projekt initialisieren
@@ -51,7 +53,7 @@ uv init swiss-energy-forecast
 cd swiss-energy-forecast
 
 # Abhängigkeiten installieren
-uv add pandas matplotlib scikit-learn tensorflow
+uv add pandas numpy matplotlib scikit-learn tensorflow
 ```
 
 ### Voraussetzungen
@@ -68,7 +70,7 @@ Die Daten stammen von [Swissgrid](https://www.swissgrid.ch) und enthalten die En
 
 ### Verwendete Spalte
 
-Aus den 64 verfügbaren Spalten wird nur eine verwendet:
+Aus den 64 verfügbaren Spalten wird nur eine als Zielwert verwendet:
 
 - **"Summe endverbrauchte Energie Regelblock Schweiz"** — der gesamte Endverbrauch in kWh
 
@@ -89,7 +91,7 @@ Die Datenaufbereitung durchläuft folgende Schritte:
 
 ### 1. Daten laden
 
-Alle CSV-Dateien werden mit Pandas eingelesen, die Einheiten-Zeile (Zeile 2) wird übersprungen und die Spaltennamen auf den deutschen Teil gekürzt. Anschliessend werden alle Jahre zu einem DataFrame zusammengeführt.
+Alle CSV-Dateien werden mit Pandas eingelesen, die Einheiten-Zeile (Zeile 2) wird übersprungen und die Spaltennamen auf den deutschen Teil gekürzt. Anschliessend werden alle Jahre zu einem DataFrame zusammengeführt und nach Zeitstempel sortiert.
 
 ### 2. Spalte extrahieren & Resamplen
 
@@ -107,37 +109,77 @@ Die Daten werden chronologisch aufgeteilt (nicht zufällig, da Zeitreihe):
 
 ### 4. Normalisierung
 
-Die Werte werden mit einem MinMaxScaler auf den Bereich [0, 1] skaliert. Der Scaler wird ausschliesslich auf den Trainingsdaten gefittet, um Data Leakage zu vermeiden. Validation und Test werden nur transformiert.
+Die Verbrauchswerte werden mit einem MinMaxScaler auf den Bereich [0, 1] skaliert. Der Scaler wird ausschliesslich auf den Trainingsdaten gefittet, um Data Leakage zu vermeiden. Validation und Test werden nur transformiert (ohne fit).
 
-### 5. Sequenzen bilden
+### 5. Zeitfeatures berechnen
+
+Zyklische Zeitfeatures werden aus dem Datetime-Index berechnet (Details siehe [Feature Engineering](#feature-engineering)). Diese brauchen keine Normalisierung, da sin/cos bereits im Bereich [-1, 1] liegen.
+
+### 6. Zusammenführen
+
+Normierter Verbrauch und Zeitfeatures werden spaltenweise zusammengeführt. Jeder Zeitpunkt hat danach 7 Werte:
+
+```
+Zeitpunkt          | Verbrauch | h_sin | h_cos | w_sin | w_cos | j_sin | j_cos
+2025-01-15 00:00   | 0.42      | 0.00  | 1.00  | 0.78  | 0.62  | 0.02  | 1.00
+2025-01-15 01:00   | 0.38      | 0.26  | 0.97  | 0.78  | 0.62  | 0.02  | 1.00
+```
+
+### 7. Sequenzen bilden (Sliding Window)
 
 Aus der Zeitreihe werden Sliding-Window-Sequenzen erstellt:
 
-- **Input (X):** Die letzten 168 Stunden (7 Tage)
-- **Output (y):** Die nächsten 24 Stunden (1 Tag)
+- **Input (X):** Die letzten 168 Stunden × 7 Features
+- **Output (y):** Die nächsten 24 Stunden (nur Verbrauch)
 
 ```
-Fenster 1:  X = [h0  ... h167]  → y = [h168 ... h191]
-Fenster 2:  X = [h1  ... h168]  → y = [h169 ... h192]
-Fenster 3:  X = [h2  ... h169]  → y = [h170 ... h193]
+Fenster 1:  X = [h0  ... h167] × 7 Features  → y = [v168 ... v191]
+Fenster 2:  X = [h1  ... h168] × 7 Features  → y = [v169 ... v192]
+Fenster 3:  X = [h2  ... h169] × 7 Features  → y = [v170 ... v193]
 ...
 ```
 
+## Feature Engineering
+
+### Warum Zeitfeatures?
+
+Der Stromverbrauch folgt starken zeitlichen Mustern: Nachts wird wenig verbraucht, morgens steigt der Verbrauch stark an, am Wochenende ist er tiefer als unter der Woche, und im Winter höher als im Sommer. Ohne Zeitfeatures muss das Modell diese Muster allein aus den Verbrauchszahlen ableiten — mit Zeitfeatures bekommt es den zeitlichen Kontext direkt mitgeliefert.
+
+### Zyklisches Encoding (sin/cos)
+
+Zeitliche Werte wie Stunden oder Wochentage sind **zyklisch**: Nach 23:00 kommt 00:00, nach Sonntag kommt Montag. Würde man die Stunde als einfache Zahl (0–23) verwenden, wären 23 und 0 für das Modell weit auseinander (Differenz 23), obwohl sie nur eine Stunde entfernt sind.
+
+Die Lösung: Jeder Zeitwert wird auf einen Kreis abgebildet mittels Sinus und Cosinus. Beide Werte zusammen ergeben eine eindeutige Position auf dem Kreis, wobei benachbarte Zeiten auch benachbarte Positionen haben.
+
+```python
+stunde_sin = sin(2π × stunde / 24)
+stunde_cos = cos(2π × stunde / 24)
+```
+
+### Verwendete Features
+
+| Feature        | Quelle          | Periode | Fängt ein                    |
+|----------------|-----------------|---------|------------------------------|
+| stunde_sin/cos | Stunde (0–23)   | 24      | Tagesrhythmus (Tag/Nacht)    |
+| wochentag_sin/cos | Wochentag (0–6) | 7   | Wochenrhythmus (Werktag/Wochenende) |
+| jahr_sin/cos   | Tag im Jahr (1–365) | 365 | Saisonalität (Sommer/Winter) |
+
 ## Modellarchitektur
 
-Einfaches Feedforward-Netzwerk (Dense/MLP) als Baseline:
+Feedforward-Netzwerk (Dense/MLP) mit Flatten-Layer für den 2D-Input:
 
 ```
-Input (168) → Dense(64, ReLU) → Dense(32, ReLU) → Output (24, Linear)
+Input (168, 7) → Flatten (1176) → Dense(64, ReLU) → Dense(32, ReLU) → Output (24, Linear)
 ```
 
-| Layer          | Neuronen | Aktivierung | Parameter |
-|----------------|----------|-------------|-----------|
-| Input          | 168      | —           | —         |
-| Hidden Layer 1 | 64       | ReLU        | 10'816    |
-| Hidden Layer 2 | 32       | ReLU        | 2'080     |
-| Output         | 24       | Linear      | 792       |
-| **Total**      |          |             | **13'688**|
+| Layer          | Output Shape | Aktivierung | Parameter |
+|----------------|-------------|-------------|-----------|
+| Input          | (168, 7)    | —           | —         |
+| Flatten        | (1176)      | —           | 0         |
+| Hidden Layer 1 | (64)        | ReLU        | 75'328    |
+| Hidden Layer 2 | (32)        | ReLU        | 2'080     |
+| Output         | (24)        | Linear      | 792       |
+| **Total**      |             |             | **78'200**|
 
 ### Trainingsparameter
 
@@ -179,7 +221,11 @@ MODEL_PATH = "model_dense.keras"
 uv run dense_network.py
 ```
 
-Lädt das gespeicherte Modell und generiert Vorhersage-Plots für verschiedene Zeiträume.
+Lädt das gespeicherte Modell und generiert Vorhersage-Plots:
+- Einzelvorhersage für ein bestimmtes Datum (24h)
+- Monatsvergleich (6 Monate nebeneinander)
+- Wochenansicht (7 Tage mit täglichen 24h-Vorhersagen)
+- Jahresübersicht (eine Woche pro Monat)
 
 ### Daten-Pipeline einzeln testen
 
@@ -189,34 +235,49 @@ Der DataInputParser hat ein integriertes Testmenü:
 uv run src/helper_data_input_parser.py
 ```
 
-Hier können alle Pipeline-Schritte einzeln ausgeführt und überprüft werden (Daten laden, Spalte extrahieren, Normalisierung, Sequenzen erstellen, etc.).
+Hier können alle Pipeline-Schritte einzeln ausgeführt und überprüft werden (Daten laden, Spalte extrahieren, Normalisierung, Zeitfeatures, Sequenzen erstellen, etc.).
 
 ## Ergebnisse
 
 ### Trainingsmetriken
 
-Das Modell konvergiert nach ca. 25–30 Epochs. EarlyStopping greift typischerweise bei Epoch ~28–35.
+Das Modell konvergiert nach ca. 25–30 Epochs. EarlyStopping greift typischerweise bei Epoch ~30.
 
 | Metrik    | Training | Validation |
 |-----------|----------|------------|
-| Loss (MSE)| ~0.0012 | ~0.0013   |
-| MAE       | ~0.025  | ~0.027    |
+| Loss (MSE)| ~0.0010 | ~0.0012   |
+| MAE       | ~0.022  | ~0.025    |
 
 ### Qualitative Bewertung
 
-- **Tagesverlauf:** Das Modell erkennt den grundsätzlichen Tag-Nacht-Rhythmus (Nachttal, Abendpeak)
+- **Tagesrhythmus:** Das Modell trifft den Tag-Nacht-Verlauf sehr gut — Nachttal, Morgenanstieg und Abendpeak werden korrekt abgebildet
+- **Wochenrhythmus:** Der Unterschied zwischen Werktagen (höherer Verbrauch) und Wochenende (tieferer Verbrauch) wird erkannt
 - **Saisonalität:** Höherer Verbrauch im Winter, tieferer im Sommer wird korrekt abgebildet
-- **Schwächen:** Die Morgenspitze wird systematisch unterschätzt, die Vorhersagen sind "geglättet" im Vergleich zur Realität
+- **Peaks:** Die Vorhersage trifft die täglichen Spitzenwerte deutlich besser als das Modell ohne Zeitfeatures
+
+## Vergleich: Ohne vs. Mit Zeitfeatures
+
+| Aspekt                | Ohne Zeitfeatures          | Mit Zeitfeatures           |
+|-----------------------|----------------------------|----------------------------|
+| Input pro Zeitpunkt   | 1 Wert (Verbrauch)        | 7 Werte (Verbrauch + 6 sin/cos) |
+| Input Shape           | (168,)                     | (168, 7)                   |
+| Parameter total       | 13'688                     | 78'200                     |
+| Morgenspitze          | Stark unterschätzt         | Gut getroffen              |
+| Wochenende erkennen   | Nicht möglich              | Ja, tieferer Verbrauch     |
+| Vorhersage-Charakter  | Geglättet, gedämpft       | Folgt realen Schwankungen  |
+
+Die Zeitfeatures haben die Vorhersagequalität massiv verbessert, obwohl die Modellarchitektur (2 Dense Layers) identisch geblieben ist. Das zeigt: **Gute Features sind oft wichtiger als ein komplexeres Modell.**
 
 ## Bekannte Limitationen
 
-- **Geglättete Vorhersagen:** Das Dense-Netzwerk tendiert dazu, extreme Werte (Peaks/Täler) zu unterschätzen. MSE als Loss-Funktion drückt das Modell Richtung Durchschnitt.
-- **Keine zeitliche Struktur:** Das Dense-Netz behandelt die 168 Eingabewerte als flachen Vektor ohne zeitlichen Zusammenhang. Es "weiss" nicht, dass Wert 167 zeitlich näher an der Vorhersage liegt als Wert 0.
-- **Nur ein Feature:** Aktuell wird nur der historische Verbrauch als Input verwendet. Zeitliche Features (Tageszeit, Wochentag, Jahreszeit) fehlen.
+- **Dense-Architektur:** Das Netzwerk behandelt die 168 × 7 Eingabewerte als flachen Vektor. Es versteht nicht, dass zeitlich nahe Werte stärker zusammenhängen als entfernte. Ein LSTM/GRU-Modell könnte die zeitliche Struktur besser nutzen.
+- **Nur ein Verbrauchs-Feature:** Es wird nur der historische Gesamtverbrauch verwendet. Zusätzliche Daten wie Temperatur, Feiertage oder Strompreise könnten die Vorhersage weiter verbessern.
 - **Kein GPU-Support:** TensorFlow auf Windows unterstützt ab Version 2.11 keine native GPU-Beschleunigung. Für dieses kleine Modell ist das kein Problem (Training dauert ~1 Minute auf CPU).
+- **Statischer Split:** Die Jahresgrenzen für Train/Val/Test sind hartkodiert. Eine flexiblere Aufteilung (z.B. prozentual) wäre robuster.
 
 ## Nächste Schritte
 
-- **Zeitfeatures hinzufügen:** Stunde, Wochentag und Monat als zusätzliche Inputs mit zyklischem Encoding (sin/cos), um dem Modell den zeitlichen Kontext zu geben
 - **LSTM/GRU-Modell:** Recurrent Neural Networks, die speziell für Zeitreihen konzipiert sind und die zeitliche Reihenfolge der Daten verstehen
+- **Zusätzliche externe Features:** Temperaturdaten, Feiertags-Flags oder Strompreise als weitere Inputs
 - **Hyperparameter-Tuning:** Lookback-Grösse, Neuronenanzahl, Learning Rate und Batch Size systematisch optimieren
+- **Rolling Forecast:** Statt einer einzelnen 24h-Vorhersage iterativ vorhersagen und mit neuen echten Werten nachführen

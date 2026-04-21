@@ -5,20 +5,22 @@ os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, Input
+from tensorflow.keras.layers import Dense, Input, Flatten
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.models import load_model
 
 
 class EnergyModel:
 
-    def __init__(self, lookback=168, horizon=24,neurons_l1=64, neurons_l2=32):
+    def __init__(self, lookback=168, horizon=24, neurons_l1=64, neurons_l2=32, n_features=7):
         # Parameter als Klassenattribute speichern
         # damit alle Methoden darauf zugreifen können
         #
         # lookback = wie viele Stunden das Modell in die Vergangenheit schaut
+        # n_features = wie viele verschiedene Werte pro Stunde als Input verwendet werden
         # horizon  = wie viele Stunden das Modell vorhersagen soll
         self.lookback = lookback
+        self.n_features = n_features
         self.horizon = horizon
 
         # Neuronen pro Hidden Layer — zum Experimentieren anpassbar
@@ -39,15 +41,23 @@ class EnergyModel:
         self.model = Sequential()
 
         # ── Input Layer ──
-        # Input(shape=(self.lookback,)) definiert die Form der Eingabe.
-        # shape=(self.lookback,) → jede Eingabe hat genau lookback Werte (z.B. 168).
-        # Das Komma macht daraus ein Tuple: (168,) statt nur die Zahl 168 —
-        # Keras erwartet immer ein Tuple als Shape-Angabe.
-        self.model.add(Input(shape=(self.lookback,)))
+        # Input(shape=(lookback, n_features)) definiert die Form der Eingabe.
+        # shape=(168, 7) → 168 Zeitschritte mit je 7 Features
+        #   Feature 0: normierter Verbrauch
+        #   Feature 1-2: Stunde (sin/cos)
+        #   Feature 3-4: Wochentag (sin/cos)
+        #   Feature 5-6: Tag im Jahr (sin/cos)
+        self.model.add(Input(shape=(self.lookback, self.n_features)))
+
+        # ── Flatten Layer ──
+        # Dense-Layer brauchen flache 1D-Eingaben, aber unser Input ist 2D.
+        # Flatten legt alle Werte hintereinander in eine Reihe:
+        # (168, 7) → (1176,)  — wie eine Tabelle die zeilenweise ausgelesen wird.
+        self.model.add(Flatten())
 
         # ── Hidden Layer 1 ──
         # Dense(neurons_l1) → vollvernetzter Layer mit neurons_l1 Neuronen.
-        # Kein shape nötig — Keras leitet die Eingabegrösse vom Input-Layer ab.
+        # Kein shape nötig — Keras leitet die Eingabegrösse vom Flatten-Layer ab (1176).
         # activation="relu": negative Werte → 0, positive bleiben erhalten.
         self.model.add(Dense(self.neurons_l1, activation="relu"))
 
@@ -240,6 +250,7 @@ if __name__ == "__main__":
 
     LOOKBACK = 168      # 7 Tage zurückschauen
     HORIZON = 24        # 1 Tag vorhersagen
+    N_FEATURES = 7      # 1 Verbrauch + 6 Zeitfeatures
     NEURONS_L1 = 64     # Neuronen im ersten Hidden Layer
     NEURONS_L2 = 32     # Neuronen im zweiten Hidden Layer
     EPOCHS = 200        # Wie oft das Modell ALLE Daten durchgeht
@@ -248,7 +259,7 @@ if __name__ == "__main__":
     MIN_DELTA = 0.0001  # Mindestverbesserung, damit EarlyStopping nicht abbricht
     USE_EARLY_STOP = True # Ob EarlyStopping aktiviert werden soll (Standard: True)
     
-    TRAIN_NEW_MODEL = True          # True = neues Modell trainieren, False = gespeichertes Modell laden
+    TRAIN_NEW_MODEL = False          # True = neues Modell trainieren, False = gespeichertes Modell laden
     MODEL_PATH = "model_dense.keras" # Pfad zum Speichern/Laden des Modells
 
     PREDICTION_DATE = "2025-06-15 14:00" # Datum für die Vorhersage (nur relevant, wenn TRAIN_NEW_MODEL=False)
@@ -266,7 +277,13 @@ if __name__ == "__main__":
     )
 
     # ── Modell erstellen ──
-    energy_model = EnergyModel(lookback=LOOKBACK, horizon=HORIZON, neurons_l1=NEURONS_L1, neurons_l2=NEURONS_L2)
+    energy_model = EnergyModel(
+        lookback=LOOKBACK,
+        horizon=HORIZON,
+        neurons_l1=NEURONS_L1,
+        neurons_l2=NEURONS_L2,
+        n_features=N_FEATURES,
+    )
 
     if TRAIN_NEW_MODEL:
         

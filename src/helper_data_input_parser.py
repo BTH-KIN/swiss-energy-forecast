@@ -146,49 +146,43 @@ class DataInputParser:
         Erzeugt Trainingssequenzen aus einer Zeitreihe.
         
         Parameter:
-        - data:     1D numpy-Array mit normalisierten Werten
+        - data:     numpy-Array mit normalisierten Werten
+                    1D: (n,) nur Verbrauch
+                    2D: (n, features) Verbrauch + Zeitfeatures
         - lookback: Wie viele Stunden in die Vergangenheit schauen (Input)
         - horizon:  Wie viele Stunden in die Zukunft vorhersagen (Output)
         
         Rückgabe:
-        - X: numpy-Array mit Shape (Anzahl_Sequenzen, lookback)
+        - X: numpy-Array
+             1D-Input: Shape (Anzahl_Sequenzen, lookback)
+             2D-Input: Shape (Anzahl_Sequenzen, lookback, features)
         - y: numpy-Array mit Shape (Anzahl_Sequenzen, horizon)
+             Enthält immer nur den Verbrauch (erste Spalte)
         """
         
         # Leere Listen zum Sammeln der Sequenzen
         X = []
         y = []
-        
-        # Berechne, wie viele Fenster reinpassen
-        # Beispiel: 1000 Datenpunkte, lookback=168, horizon=24
-        # → 1000 - 168 - 24 = 808 Fenster möglich
         stop = len(data) - lookback - horizon
-        
-        # Schleife: Schiebe das Fenster von Position 0 bis stop
+
         for i in range(stop):
-            
-            # X-Sequenz: Von Position i bis i+lookback (lookback Werte)
-            # Beispiel i=0: data[0:168]   → die ersten 168 Stunden
-            # Beispiel i=1: data[1:169]   → Stunde 1 bis 168
-            # Beispiel i=2: data[2:170]   → Stunde 2 bis 169
+            # X bekommt ALLE Spalten (Verbrauch + Zeitfeatures)
+            # Bei 7 Spalten: Shape pro Sequenz = (168, 7)
             x_sequence = data[i : i + lookback]
-            
-            # y-Sequenz: Direkt nach der X-Sequenz, horizon Werte lang
-            # Beispiel i=0: data[168:192] → Stunde 168 bis 191
-            # Beispiel i=1: data[169:193] → Stunde 169 bis 192
-            # Beispiel i=2: data[170:194] → Stunde 170 bis 193
-            y_sequence = data[i + lookback : i + lookback + horizon]
-            
-            # Sequenzen in die Listen anfügen
+
+            # y bekommt NUR den Verbrauch (erste Spalte)
+            # Wenn data 2D ist (mehrere Spalten): nur Spalte 0 nehmen
+            # Wenn data 1D ist (wie vorher): alles nehmen
+            if data.ndim == 1:
+                y_sequence = data[i + lookback : i + lookback + horizon]
+            else:
+                y_sequence = data[i + lookback : i + lookback + horizon, 0]
+
             X.append(x_sequence)
             y.append(y_sequence)
-        
-        # Listen in numpy-Arrays umwandeln
-        # X bekommt Shape (808, 168) → 808 Beispiele, je 168 Eingabewerte
-        # y bekommt Shape (808, 24)  → 808 Beispiele, je 24 Zielwerte
+
         X = np.array(X)
         y = np.array(y)
-        
         return X, y
     
     def split_data(self, df_serie, train_end="2023", val_end="2024", test_end="2025"):
@@ -224,6 +218,51 @@ class DataInputParser:
         test = df_serie[test_start : test_end]
         
         return train, val, test
+    
+    def create_time_features(self, datetime_index):
+        """
+        Erzeugt zyklische Zeitfeatures aus einem Datetime-Index.
+        
+        Parameter:
+        - datetime_index: Pandas DatetimeIndex (z.B. df.index)
+        
+        Rückgabe:
+        - DataFrame mit 6 Spalten:
+          stunde_sin, stunde_cos     → Tagesrhythmus (0-23h)
+          wochentag_sin, wochentag_cos → Wochenrhythmus (Mo-So)
+          jahr_sin, jahr_cos         → Jahresrhythmus (Jan-Dez)
+        """
+        # Stunde des Tages: 0 bis 23
+        # Normalisieren auf 0 bis 2π (ein voller Kreis)
+        # 2π / 24 = ein Kreis aufgeteilt in 24 Stunden
+        stunde = datetime_index.hour
+        stunde_sin = np.sin(2 * np.pi * stunde / 24)
+        stunde_cos = np.cos(2 * np.pi * stunde / 24)
+
+        # Wochentag: 0=Montag bis 6=Sonntag
+        # 2π / 7 = ein Kreis aufgeteilt in 7 Tage
+        wochentag = datetime_index.weekday
+        wochentag_sin = np.sin(2 * np.pi * wochentag / 7)
+        wochentag_cos = np.cos(2 * np.pi * wochentag / 7)
+
+        # Tag im Jahr: 0 bis 365
+        # 2π / 365 = ein Kreis aufgeteilt in 365 Tage
+        # Fängt saisonale Muster ein (Sommer/Winter)
+        tag_im_jahr = datetime_index.dayofyear
+        jahr_sin = np.sin(2 * np.pi * tag_im_jahr / 365)
+        jahr_cos = np.cos(2 * np.pi * tag_im_jahr / 365)
+
+        # Alles in einen DataFrame packen
+        df_features = pd.DataFrame({
+            "stunde_sin": stunde_sin,
+            "stunde_cos": stunde_cos,
+            "wochentag_sin": wochentag_sin,
+            "wochentag_cos": wochentag_cos,
+            "jahr_sin": jahr_sin,
+            "jahr_cos": jahr_cos,
+        }, index=datetime_index)
+
+        return df_features
 
     def date_to_index(self, date_string, lookback=168):
         """
@@ -258,18 +297,31 @@ class DataInputParser:
         """
         Führt die komplette Datenaufbereitung durch.
         
+        Schritte:
+        1. CSV-Dateien laden und zusammenführen
+        2. Zielspalte extrahieren
+        3. Resamplen auf gewünschtes Intervall
+        4. Aufteilen in Train/Val/Test
+        5. Verbrauch normalisieren (fit nur auf Train)
+        6. Zyklische Zeitfeatures berechnen (sin/cos)
+        7. Verbrauch + Zeitfeatures zusammenführen
+        8. Sequenzen bilden (Sliding Window)
+        
         Parameter:
         - file_list: Liste der CSV-Dateinamen (ohne .csv)
         - column:    Name der Zielspalte
         - lookback:  Eingabelänge in Stunden (default: 168 = 7 Tage)
         - horizon:   Vorhersagelänge in Stunden (default: 24 = 1 Tag)
-        - avg:       Resampling-Intervall (default: "h" = stündlich) mögliche Werte: "min", "h", "D", "W", "ME", "YE"
-        - train_end:  Letztes Jahr für Training (default: "2023")
-        - val_end:    Letztes Jahr für Validation (default: "2024")
-        - test_end:   Letztes Jahr für Test (default: "2025")
+        - avg:       Resampling-Intervall (default: "h") 
+                     Mögliche Werte: "min", "h", "D", "W", "ME", "YE"
+        - train_end: Letztes Jahr für Training (default: "2023")
+        - val_end:   Letztes Jahr für Validation (default: "2024")
+        - test_end:  Letztes Jahr für Test (default: "2025")
         
         Rückgabe:
         - X_train, y_train, X_val, y_val, X_test, y_test (numpy-Arrays)
+          X Shape: (Anzahl_Sequenzen, lookback, 7) — 7 = Verbrauch + 6 Zeitfeatures
+          y Shape: (Anzahl_Sequenzen, horizon) — nur Verbrauch
         """
         # Laden der Daten aus den CSV-Dateien
         self.load_csv_data(file_list)
@@ -294,16 +346,33 @@ class DataInputParser:
         val_norm = self.data_normirung(val, fit=False)
         test_norm = self.data_normirung(test, fit=False)
 
-        # Erstellen der Sequenzen für Train, Validation und Test
-        # Die create_sequences-Funktion erwartet 1D-Arrays, daher wird .values.flatten() verwendet, um die Serie in ein 1D-Array umzuwandeln
+        # Zeitfeatures berechnen für jeden Teil separat
+        # Jeder Teil hat seinen eigenen Datetime-Index
+        # Die Features brauchen keine Normalisierung (sin/cos sind schon -1 bis 1)
+        train_time = self.create_time_features(train.index)
+        val_time = self.create_time_features(val.index)
+        test_time = self.create_time_features(test.index)
+
+        # Verbrauch + Zeitfeatures nebeneinander zusammenfügen
+        # axis=1 heisst: Spalten nebeneinander, nicht Zeilen untereinander
+        # Vorher:  train_norm hat 1 Spalte  (Verbrauch)
+        # Nachher: train_combined hat 7 Spalten (Verbrauch + 6 Zeitfeatures)
+        train_combined = pd.concat([train_norm, train_time], axis=1)
+        val_combined = pd.concat([val_norm, val_time], axis=1)
+        test_combined = pd.concat([test_norm, test_time], axis=1)
+
+        # Sequenzen bilden
+        # WICHTIG: y (Zielwerte) bleibt nur der Verbrauch!
+        # Das Modell soll Verbrauch vorhersagen, nicht sin/cos
+        # Deshalb: X bekommt alle 7 Spalten, y nur Spalte 0
         X_train, y_train = self.create_sequences(
-            train_norm.values.flatten(), lookback, horizon
+            train_combined.values, lookback, horizon
         )
         X_val, y_val = self.create_sequences(
-            val_norm.values.flatten(), lookback, horizon
+            val_combined.values, lookback, horizon
         )
         X_test, y_test = self.create_sequences(
-            test_norm.values.flatten(), lookback, horizon
+            test_combined.values, lookback, horizon
         )
 
         return X_train, y_train, X_val, y_val, X_test, y_test
@@ -333,6 +402,7 @@ if __name__ == "__main__":
     print("8: data_rücknormirung - Rücknormalisierung")
     print("9: create_sequences   - Sequenzen erstellen")
     print("10: prepare_pipeline  - Komplette Pipeline")
+    print("11: create_time_features - Zeitfeatures erzeugen")
     auswahl = input("Test eingeben: ").strip()
 
     data = DataInputParser()
@@ -416,6 +486,19 @@ if __name__ == "__main__":
         print(f"  X_val   (Zeilen, Spalten): {X_val.shape}    y_val   (Zeilen, Spalten): {y_val.shape}")
         print(f"  X_test  (Zeilen, Spalten): {X_test.shape}   y_test  (Zeilen, Spalten): {y_test.shape}")
 
+    elif auswahl == "11":
+        data.load_csv_data(FILE_LIST)
+        data.extract_colum(COLUM)
+        data_avg = data.avg("h")
+        # Zeitfeatures aus dem Index der Stundendaten erzeugen
+        features = data.create_time_features(data_avg.index)
+        print(f"Shape: {features.shape}")
+        print(f"Spalten: {list(features.columns)}")
+        print(f"\nErste 5 Zeilen:")
+        print(features.head(5))
+        print(f"\nMitternacht vs. Mittag (Stunden-Feature):")
+        print(features.iloc[0][["stunde_sin", "stunde_cos"]], "← 00:00")
+        print(features.iloc[12][["stunde_sin", "stunde_cos"]], "← 12:00")
 
     else:
         print(f"Unbekannte Auswahl: {auswahl}")
