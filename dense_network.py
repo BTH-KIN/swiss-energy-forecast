@@ -8,11 +8,12 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Input, Flatten
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.models import load_model
+from tensorflow.keras.optimizers import Adam
 
 
 class EnergyModel:
 
-    def __init__(self, lookback=168, horizon=24, neurons_l1=64, neurons_l2=32, n_features=7):
+    def __init__(self, lookback=168, horizon=24, neurons_l1=64, neurons_l2=32, n_features=7, learning_rate=0.001):
         # Parameter als Klassenattribute speichern
         # damit alle Methoden darauf zugreifen können
         #
@@ -30,6 +31,12 @@ class EnergyModel:
         # Kleinere Werte = schneller, aber vielleicht zu simpel
         self.neurons_l1 = neurons_l1
         self.neurons_l2 = neurons_l2
+
+                # Learning Rate: Wie gross die Lernschritte sind
+        # Zu gross (z.B. 0.01) → Modell springt über gute Lösungen hinweg
+        # Zu klein (z.B. 0.00001) → Modell lernt extrem langsam
+        # 0.001 ist der Standard-Startwert für Adam
+        self.learning_rate = learning_rate
 
         # Modell wird erst in build_model() erstellt
         # Hier nur auf None setzen, damit es als Attribut existiert
@@ -78,11 +85,15 @@ class EnergyModel:
         # Das Modell ist jetzt gebaut (die Architektur steht),
         # aber es weiss noch nicht, wie es trainieren soll.
         #
-        # optimizer="adam":
+        # optimizer=Adam(learning_rate=self.learning_rate):
         #   Adam ist der Algorithmus, der die Gewichte anpasst.
         #   Er bestimmt: "In welche Richtung und wie stark
         #   sollen die Gewichte verändert werden?"
-        #   Adam ist der Standard — funktioniert fast immer gut.
+        #   
+        #   learning_rate steuert die Schrittgrösse:
+        #   Zu gross (z.B. 0.01)    → Modell springt über gute Lösungen hinweg
+        #   Zu klein (z.B. 0.00001) → Modell lernt extrem langsam
+        #   Standard: 0.001         → guter Startwert für die meisten Fälle
         #
         # loss="mse" (Mean Squared Error):
         #   Die Fehlerfunktion. Sie misst, wie falsch das Modell liegt.
@@ -99,10 +110,10 @@ class EnergyModel:
         #   "Im Schnitt liegt das Modell 0.2 daneben"
         #   MAE wird NICHT zum Trainieren benutzt, nur zur Anzeige.
         self.model.compile(
-            optimizer="adam",
+            optimizer=Adam(learning_rate=self.learning_rate),
             loss="mse",
             metrics=["mae"]
-        ) 
+        )
     
     def train_model(self, X_train, y_train, X_val, y_val, epochs=50, batch_size=32, patience=10, min_delta=0.0001, use_early_stop=True):
         """
@@ -251,10 +262,14 @@ if __name__ == "__main__":
     LOOKBACK = 168      # 7 Tage zurückschauen
     HORIZON = 24        # 1 Tag vorhersagen
     N_FEATURES = 7      # 1 Verbrauch + 6 Zeitfeatures
-    NEURONS_L1 = 64     # Neuronen im ersten Hidden Layer
+
+    NEURONS_L1 = 64    # Neuronen im ersten Hidden Layer
     NEURONS_L2 = 32     # Neuronen im zweiten Hidden Layer
+    LEARNING_RATE = 0.001 # Wie schnell das Modell lernt (Standard: 0.001)
+
     EPOCHS = 200        # Wie oft das Modell ALLE Daten durchgeht
     BATCH_SIZE = 32     # Wie viele Sequenzen gleichzeitig verarbeitet werden
+
     PATIENCE = 10       # Wie viele Epochen ohne Verbesserung bis EarlyStopping abbricht
     MIN_DELTA = 0.0001  # Mindestverbesserung, damit EarlyStopping nicht abbricht
     USE_EARLY_STOP = True # Ob EarlyStopping aktiviert werden soll (Standard: True)
@@ -283,6 +298,7 @@ if __name__ == "__main__":
         neurons_l1=NEURONS_L1,
         neurons_l2=NEURONS_L2,
         n_features=N_FEATURES,
+        learning_rate=LEARNING_RATE,
     )
 
     if TRAIN_NEW_MODEL:
