@@ -239,16 +239,26 @@ Hier können alle Pipeline-Schritte einzeln ausgeführt und überprüft werden (
 
 ## Ergebnisse
 
-### Trainingsmetriken
+### Experimentvergleich
 
-Das Modell konvergiert nach ca. 25–30 Epochs. EarlyStopping greift typischerweise bei Epoch ~30.
+Alle Modelle wurden mit EarlyStopping (patience=10) trainiert. Die Werte sind aus den Trainingsplots abgelesen.
 
-| Metrik    | Training | Validation |
-|-----------|----------|------------|
-| Loss (MSE)| ~0.0010 | ~0.0012   |
-| MAE       | ~0.022  | ~0.025    |
+| # | Modell | Neuronen | Zeitfeatures | Batch Size | Learning Rate | val_loss (MSE) | val_MAE | Epochs |
+|---|--------|----------|-------------|------------|---------------|----------------|---------|--------|
+| 1 | Baseline | 64/32 | Nein | 32 | 0.001 | ~0.0013 | ~0.027 | ~28 |
+| 2 | Batch 128 | 64/32 | Nein | 128 | 0.001 | ~0.0014 | ~0.028 | ~26 |
+| 3 | + Zeitfeatures | 64/32 | Ja | 32 | 0.001 | ~0.0012 | ~0.025 | ~30 |
+| 4 | + Mehr Neuronen | 128/64 | Ja | 32 | 0.001 | ~0.0012 | ~0.027 | ~15 |
+| 5 | + Kleinere LR | 64/32 | Ja | 32 | 0.0005 | ~0.0013 | ~0.027 | ~18 |
 
-### Qualitative Bewertung
+### Erkenntnisse aus den Experimenten
+
+- **Zeitfeatures (Experiment 3)** brachten die grösste Verbesserung. Die Vorhersagen treffen Morgenspitzen, Wochenend-Muster und saisonale Unterschiede deutlich besser. Dies war die wirkungsvollste einzelne Änderung.
+- **Batch Size (Experiment 2)** hatte kaum Einfluss auf die Vorhersagequalität. Grössere Batches beschleunigen das Training pro Epoch, aber die Ergebnisse sind vergleichbar.
+- **Mehr Neuronen (Experiment 4)** verbesserten den val_loss nicht merklich, beschleunigten aber die Konvergenz (15 statt 30 Epochs). Das Modell war mit 64/32 bereits gross genug — die Limitierung liegt an der Dense-Architektur, nicht an der Kapazität.
+- **Kleinere Learning Rate (Experiment 5)** zeigte glattere Trainingskurven, aber keine signifikante Verbesserung des Endergebnisses. Der Adam-Standardwert (0.001) war für dieses Problem bereits gut gewählt.
+
+### Qualitative Bewertung (bestes Modell: Experiment 3)
 
 - **Tagesrhythmus:** Das Modell trifft den Tag-Nacht-Verlauf sehr gut — Nachttal, Morgenanstieg und Abendpeak werden korrekt abgebildet
 - **Wochenrhythmus:** Der Unterschied zwischen Werktagen (höherer Verbrauch) und Wochenende (tieferer Verbrauch) wird erkannt
