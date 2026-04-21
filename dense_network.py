@@ -259,9 +259,15 @@ if __name__ == "__main__":
     ]
     COLUM = "Summe endverbrauchte Energie Regelblock Schweiz"
 
+    # Zeitfeatures ein-/ausschalten
+    # True  → Verbrauch + 6 Zeitfeatures (sin/cos für Stunde, Wochentag, Jahr)
+    # False → nur Verbrauch, wie vor dem Einbau der Zeitfeatures
+    USE_TIME_FEATURES = True
+    
     LOOKBACK = 168      # 7 Tage zurückschauen
     HORIZON = 24        # 1 Tag vorhersagen
-    N_FEATURES = 7      # 1 Verbrauch + 6 Zeitfeatures
+    N_FEATURES = 7 if USE_TIME_FEATURES else 1 # Anzahl Features pro Zeitschritt: 7 mit Zeitfeatures, 1 ohne
+
 
     NEURONS_L1 = 64    # Neuronen im ersten Hidden Layer
     NEURONS_L2 = 32     # Neuronen im zweiten Hidden Layer
@@ -289,6 +295,7 @@ if __name__ == "__main__":
         column=COLUM,
         lookback=LOOKBACK,
         horizon=HORIZON,
+        use_time_features=USE_TIME_FEATURES,
     )
 
     # ── Modell erstellen ──

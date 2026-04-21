@@ -293,7 +293,7 @@ class DataInputParser:
         
         return index
     
-    def prepare_pipeline(self, file_list, column, lookback=168, horizon=24, avg="h",train_end="2023", val_end="2024", test_end="2025"):
+    def prepare_pipeline(self, file_list, column, lookback=168, horizon=24, avg="h", train_end="2023", val_end="2024", test_end="2025", use_time_features=True):       
         """
         Führt die komplette Datenaufbereitung durch.
         
@@ -317,6 +317,9 @@ class DataInputParser:
         - train_end: Letztes Jahr für Training (default: "2023")
         - val_end:   Letztes Jahr für Validation (default: "2024")
         - test_end:  Letztes Jahr für Test (default: "2025")
+        - use_time_features: Ob zyklische Zeitfeatures (sin/cos) hinzugefügt werden (default: True)
+                             True  → X Shape: (Anzahl_Sequenzen, lookback, 7)
+                             False → X Shape: (Anzahl_Sequenzen, lookback)
         
         Rückgabe:
         - X_train, y_train, X_val, y_val, X_test, y_test (numpy-Arrays)
@@ -346,34 +349,47 @@ class DataInputParser:
         val_norm = self.data_normirung(val, fit=False)
         test_norm = self.data_normirung(test, fit=False)
 
-        # Zeitfeatures berechnen für jeden Teil separat
-        # Jeder Teil hat seinen eigenen Datetime-Index
-        # Die Features brauchen keine Normalisierung (sin/cos sind schon -1 bis 1)
-        train_time = self.create_time_features(train.index)
-        val_time = self.create_time_features(val.index)
-        test_time = self.create_time_features(test.index)
+        if use_time_features:
+            # Zeitfeatures berechnen für jeden Teil separat
+            # Jeder Teil hat seinen eigenen Datetime-Index
+            # Die Features brauchen keine Normalisierung (sin/cos sind schon -1 bis 1)
+            train_time = self.create_time_features(train.index)
+            val_time = self.create_time_features(val.index)
+            test_time = self.create_time_features(test.index)
 
-        # Verbrauch + Zeitfeatures nebeneinander zusammenfügen
-        # axis=1 heisst: Spalten nebeneinander, nicht Zeilen untereinander
-        # Vorher:  train_norm hat 1 Spalte  (Verbrauch)
-        # Nachher: train_combined hat 7 Spalten (Verbrauch + 6 Zeitfeatures)
-        train_combined = pd.concat([train_norm, train_time], axis=1)
-        val_combined = pd.concat([val_norm, val_time], axis=1)
-        test_combined = pd.concat([test_norm, test_time], axis=1)
+            # Verbrauch + Zeitfeatures nebeneinander zusammenfügen
+            # axis=1 heisst: Spalten nebeneinander, nicht Zeilen untereinander
+            # Vorher:  train_norm hat 1 Spalte  (Verbrauch)
+            # Nachher: train_combined hat 7 Spalten (Verbrauch + 6 Zeitfeatures)
+            train_combined = pd.concat([train_norm, train_time], axis=1)
+            val_combined = pd.concat([val_norm, val_time], axis=1)
+            test_combined = pd.concat([test_norm, test_time], axis=1)
 
-        # Sequenzen bilden
-        # WICHTIG: y (Zielwerte) bleibt nur der Verbrauch!
-        # Das Modell soll Verbrauch vorhersagen, nicht sin/cos
-        # Deshalb: X bekommt alle 7 Spalten, y nur Spalte 0
-        X_train, y_train = self.create_sequences(
-            train_combined.values, lookback, horizon
-        )
-        X_val, y_val = self.create_sequences(
-            val_combined.values, lookback, horizon
-        )
-        X_test, y_test = self.create_sequences(
-            test_combined.values, lookback, horizon
-        )
+            # Erstellen der Sequenzen für Train, Validation und Test
+            # Die create_sequences-Funktion bekommt jetzt 2D-Arrays (n, 7)
+            # X bekommt alle 7 Spalten, y nur den Verbrauch (Spalte 0)
+            X_train, y_train = self.create_sequences(
+                train_combined.values, lookback, horizon
+            )
+            X_val, y_val = self.create_sequences(
+                val_combined.values, lookback, horizon
+            )
+            X_test, y_test = self.create_sequences(
+                test_combined.values, lookback, horizon
+            )
+        else:
+            # Ohne Zeitfeatures: nur normierter Verbrauch als 1D-Array
+            # .values.flatten() wandelt den DataFrame in ein 1D numpy-Array um
+            # Ergebnis: X Shape (Anzahl_Sequenzen, lookback) — ohne Features-Dimension
+            X_train, y_train = self.create_sequences(
+                train_norm.values.flatten(), lookback, horizon
+            )
+            X_val, y_val = self.create_sequences(
+                val_norm.values.flatten(), lookback, horizon
+            )
+            X_test, y_test = self.create_sequences(
+                test_norm.values.flatten(), lookback, horizon
+            )
 
         return X_train, y_train, X_val, y_val, X_test, y_test
 
