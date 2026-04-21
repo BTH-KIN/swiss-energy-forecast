@@ -35,9 +35,12 @@ swiss-energy-forecast/
 │   ├── EnergieUebersichtCH-2023.csv
 │   ├── EnergieUebersichtCH-2024.csv
 │   └── EnergieUebersichtCH-2025.csv
+├── results/                           # Gespeicherte Trainings- und Vorhersagedaten
+│   ├── history_dense_*.csv            # Trainingsverlauf pro Modell (Loss/MAE pro Epoch)
+│   └── predictions_dense_*.npz        # Vorhersagen pro Modell (y_real + y_pred)
 ├── src/
 │   ├── helper_data_input_parser.py    # Datenaufbereitung & Pipeline
-│   └── helper_csv_data_plot.py        # Visualisierungen
+│   └── helper_csv_data_plot.py        # Visualisierungen & Modellvergleiche
 ├── dense_network.py                   # Hauptscript: Training & Vorhersage
 ├── model_dense.keras                  # Gespeichertes Modell (nach Training)
 └── README.md
@@ -111,13 +114,13 @@ Die Daten werden chronologisch aufgeteilt (nicht zufällig, da Zeitreihe):
 
 Die Verbrauchswerte werden mit einem MinMaxScaler auf den Bereich [0, 1] skaliert. Der Scaler wird ausschliesslich auf den Trainingsdaten gefittet, um Data Leakage zu vermeiden. Validation und Test werden nur transformiert (ohne fit).
 
-### 5. Zeitfeatures berechnen
+### 5. Zeitfeatures berechnen (optional)
 
-Zyklische Zeitfeatures werden aus dem Datetime-Index berechnet (Details siehe [Feature Engineering](#feature-engineering)). Diese brauchen keine Normalisierung, da sin/cos bereits im Bereich [-1, 1] liegen.
+Zyklische Zeitfeatures werden aus dem Datetime-Index berechnet (Details siehe [Feature Engineering](#feature-engineering)). Diese brauchen keine Normalisierung, da sin/cos bereits im Bereich [-1, 1] liegen. Über den Parameter `use_time_features=True/False` kann dies ein-/ausgeschaltet werden.
 
 ### 6. Zusammenführen
 
-Normierter Verbrauch und Zeitfeatures werden spaltenweise zusammengeführt. Jeder Zeitpunkt hat danach 7 Werte:
+Normierter Verbrauch und Zeitfeatures werden spaltenweise zusammengeführt. Jeder Zeitpunkt hat danach 7 Werte (bzw. 1 ohne Zeitfeatures):
 
 ```
 Zeitpunkt          | Verbrauch | h_sin | h_cos | w_sin | w_cos | j_sin | j_cos
@@ -143,15 +146,13 @@ Fenster 3:  X = [h2  ... h169] × 7 Features  → y = [v170 ... v193]
 
 ### Warum Zeitfeatures?
 
-Der Stromverbrauch folgt starken zeitlichen Mustern: Nachts wird wenig verbraucht, morgens steigt der Verbrauch stark an, am Wochenende ist er tiefer als unter der Woche, und im Winter höher als im Sommer. Ohne Zeitfeatures muss das Modell diese Muster allein aus den Verbrauchszahlen ableiten — mit Zeitfeatures bekommt es den zeitlichen Kontext direkt mitgeliefert.
+Der Stromverbrauch folgt starken zeitlichen Mustern: Nachts wird wenig verbraucht, morgens steigt der Verbrauch stark an, am Wochenende ist er tiefer als an Werktagen, und im Winter höher als im Sommer. Ohne Zeitfeatures muss das Modell diese Muster allein aus den Verbrauchszahlen ableiten.
 
 ### Zyklisches Encoding (sin/cos)
 
-Zeitliche Werte wie Stunden oder Wochentage sind **zyklisch**: Nach 23:00 kommt 00:00, nach Sonntag kommt Montag. Würde man die Stunde als einfache Zahl (0–23) verwenden, wären 23 und 0 für das Modell weit auseinander (Differenz 23), obwohl sie nur eine Stunde entfernt sind.
+Zeitliche Grössen wie Stunden oder Wochentage sind **zyklisch**: Nach 23:00 kommt 00:00, nach Sonntag kommt Montag. Eine lineare Kodierung (0–23) würde dem Modell suggerieren, dass 23 und 0 weit auseinanderliegen. Stattdessen wird jeder Zeitwert auf einen Kreis abgebildet mittels Sinus und Cosinus:
 
-Die Lösung: Jeder Zeitwert wird auf einen Kreis abgebildet mittels Sinus und Cosinus. Beide Werte zusammen ergeben eine eindeutige Position auf dem Kreis, wobei benachbarte Zeiten auch benachbarte Positionen haben.
-
-```python
+```
 stunde_sin = sin(2π × stunde / 24)
 stunde_cos = cos(2π × stunde / 24)
 ```
@@ -186,6 +187,7 @@ Input (168, 7) → Flatten (1176) → Dense(64, ReLU) → Dense(32, ReLU) → Ou
 | Parameter      | Wert   | Beschreibung                                      |
 |----------------|--------|---------------------------------------------------|
 | Optimizer      | Adam   | Adaptiver Lernraten-Algorithmus                   |
+| Learning Rate  | 0.001  | Schrittgrösse beim Lernen (konfigurierbar)        |
 | Loss           | MSE    | Mean Squared Error — bestraft grosse Fehler stark  |
 | Metrik         | MAE    | Mean Absolute Error — zur Kontrolle               |
 | Epochs         | max 200| Maximale Anzahl Trainingsdurchläufe               |
@@ -200,6 +202,10 @@ In `dense_network.py` die Konfiguration anpassen:
 
 ```python
 TRAIN_NEW_MODEL = True
+USE_TIME_FEATURES = True    # True = mit Zeitfeatures, False = ohne
+NEURONS_L1 = 64             # Neuronen Hidden Layer 1
+NEURONS_L2 = 32             # Neuronen Hidden Layer 2
+LEARNING_RATE = 0.001       # Lernrate
 ```
 
 Dann ausführen:
@@ -208,7 +214,10 @@ Dann ausführen:
 uv run dense_network.py
 ```
 
-Das Script durchläuft die gesamte Pipeline, trainiert das Modell, speichert es als `model_dense.keras` und zeigt den Trainingsverlauf als Plot.
+Das Script durchläuft die Pipeline, trainiert das Modell und speichert automatisch:
+- `model_dense.keras` — das trainierte Modell
+- `results/history_dense_*.csv` — Trainingsverlauf (Loss/MAE pro Epoch)
+- `results/predictions_dense_*.npz` — Vorhersagen (echte Werte + Predictions)
 
 ### Vorhersagen mit gespeichertem Modell
 
@@ -221,11 +230,34 @@ MODEL_PATH = "model_dense.keras"
 uv run dense_network.py
 ```
 
-Lädt das gespeicherte Modell und generiert Vorhersage-Plots:
-- Einzelvorhersage für ein bestimmtes Datum (24h)
-- Monatsvergleich (6 Monate nebeneinander)
-- Wochenansicht (7 Tage mit täglichen 24h-Vorhersagen)
-- Jahresübersicht (eine Woche pro Monat)
+Lädt das gespeicherte Modell, generiert Vorhersagen und speichert die Ergebnisse in `results/`.
+
+### Modelle vergleichen
+
+Nachdem mehrere Modelle trainiert und ihre Ergebnisse in `results/` gespeichert wurden, können sie visuell verglichen werden:
+
+```bash
+uv run src/helper_csv_data_plot.py
+```
+
+Dies lädt automatisch alle gespeicherten Trainingsverläufe und Vorhersagen aus `results/` und erzeugt Vergleichsplots:
+- **Trainingsvergleich:** Validation Loss und MAE aller Modelle über die Epochs
+- **Tagesvergleich:** 24h-Vorhersage aller Modelle für ein bestimmtes Datum
+- **Wochenvergleich:** Eine Woche mit Vorhersagen aller Modelle übereinandergelegt
+
+### Dateinamen-Konvention
+
+Die Ergebnisse werden automatisch nach den Modellparametern benannt:
+
+```
+dense_{neurons_l1}_{neurons_l2}_lr{learning_rate}_f{n_features}
+```
+
+Beispiele:
+- `dense_64_32_lr0.001_f1` — Baseline ohne Zeitfeatures
+- `dense_64_32_lr0.001_f7` — Mit Zeitfeatures
+- `dense_128_64_lr0.001_f7` — Mehr Neuronen, mit Zeitfeatures
+- `dense_64_32_lr0.0005_f7` — Kleinere Learning Rate, mit Zeitfeatures
 
 ### Daten-Pipeline einzeln testen
 
@@ -258,6 +290,8 @@ Alle Modelle wurden mit EarlyStopping (patience=10) trainiert. Die Werte sind au
 - **Mehr Neuronen (Experiment 4)** verbesserten den val_loss nicht merklich, beschleunigten aber die Konvergenz (15 statt 30 Epochs). Das Modell war mit 64/32 bereits gross genug — die Limitierung liegt an der Dense-Architektur, nicht an der Kapazität.
 - **Kleinere Learning Rate (Experiment 5)** zeigte glattere Trainingskurven, aber keine signifikante Verbesserung des Endergebnisses. Der Adam-Standardwert (0.001) war für dieses Problem bereits gut gewählt.
 
+Die zentrale Erkenntnis ist, dass gutes Feature Engineering wirkungsvoller war als die Erhöhung der Modellkomplexität.
+
 ### Qualitative Bewertung (bestes Modell: Experiment 3)
 
 - **Tagesrhythmus:** Das Modell trifft den Tag-Nacht-Verlauf sehr gut — Nachttal, Morgenanstieg und Abendpeak werden korrekt abgebildet
@@ -275,8 +309,6 @@ Alle Modelle wurden mit EarlyStopping (patience=10) trainiert. Die Werte sind au
 | Morgenspitze          | Stark unterschätzt         | Gut getroffen              |
 | Wochenende erkennen   | Nicht möglich              | Ja, tieferer Verbrauch     |
 | Vorhersage-Charakter  | Geglättet, gedämpft       | Folgt realen Schwankungen  |
-
-Die Zeitfeatures haben die Vorhersagequalität massiv verbessert, obwohl die Modellarchitektur (2 Dense Layers) identisch geblieben ist. Das zeigt: **Gute Features sind oft wichtiger als ein komplexeres Modell.**
 
 ## Bekannte Limitationen
 
