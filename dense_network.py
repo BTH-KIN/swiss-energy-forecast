@@ -4,6 +4,9 @@ os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 # TensorFlow-Log-Level auf "2" setzen, um nur Fehler anzuzeigen
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
+import pandas as pd
+import numpy as np
+
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Input, Flatten
 from tensorflow.keras.callbacks import EarlyStopping
@@ -187,6 +190,57 @@ class EnergyModel:
         )
         return self.history
     
+    def save_training_history(self, path="results"):
+        """
+        Speichert den Trainingsverlauf als CSV.
+        
+        Args:
+            path: Ordner zum Speichern (default: "results")
+        
+        Speichert:
+            results/history_dense_128_64_lr0.001.csv
+            → Eine Zeile pro Epoch mit loss, val_loss, mae, val_mae
+        """
+
+        os.makedirs(path, exist_ok=True)
+
+        # Modellname aus den Parametern zusammenbauen
+        # z.B. "dense_128_64_lr0.001" oder "dense_64_32_lr0.0005"
+        self.model_name = (
+            f"dense_{self.neurons_l1}_{self.neurons_l2}"
+            f"_lr{self.learning_rate}"
+            f"_f{self.n_features}"
+        )
+
+        # history.history ist ein Dictionary mit Listen
+        # → DataFrame draus machen, dann als CSV speichern
+        df_history = pd.DataFrame(self.history.history)
+        filepath = os.path.join(path, f"history_{self.model_name}.csv")
+        df_history.to_csv(filepath, index_label="epoch")
+        print(f"Trainingsverlauf gespeichert: {filepath}")
+    
+    def save_predictions(self, y_real, y_pred, path="results"):
+        """
+        Speichert echte Werte und Vorhersagen als numpy-Dateien.
+        
+        Args:
+            y_real: numpy-Array mit echten Werten (rücknormalisiert)
+            y_pred: numpy-Array mit Vorhersagen (rücknormalisiert)
+            path:   Ordner zum Speichern (default: "results")
+        """
+
+        os.makedirs(path, exist_ok=True)
+
+        # .npz speichert mehrere numpy-Arrays in einer Datei
+        # Wie ein ZIP für Arrays — kompakt und schnell zu laden
+        filepath = os.path.join(path, f"predictions_{self.model_name}.npz")
+        np.savez(
+            filepath,
+            y_real=y_real,
+            y_pred=y_pred,
+        )
+        print(f"Vorhersagen gespeichert: {filepath}")
+    
     def predict(self, X_test):
         """
         Generiert Vorhersagen für die Testdaten.
@@ -280,7 +334,7 @@ if __name__ == "__main__":
     MIN_DELTA = 0.0001  # Mindestverbesserung, damit EarlyStopping nicht abbricht
     USE_EARLY_STOP = True # Ob EarlyStopping aktiviert werden soll (Standard: True)
     
-    TRAIN_NEW_MODEL = False          # True = neues Modell trainieren, False = gespeichertes Modell laden
+    TRAIN_NEW_MODEL = True          # True = neues Modell trainieren, False = gespeichertes Modell laden
     MODEL_PATH = "model_dense.keras" # Pfad zum Speichern/Laden des Modells
 
     PREDICTION_DATE = "2025-06-15 14:00" # Datum für die Vorhersage (nur relevant, wenn TRAIN_NEW_MODEL=False)
@@ -309,54 +363,79 @@ if __name__ == "__main__":
     )
 
     if TRAIN_NEW_MODEL:
-        
-        # ── Modell bauen (Architektur definieren) ──
-        energy_model.build_model()
+            
+            # ── Modell bauen (Architektur definieren) ──
+            energy_model.build_model()
 
-        # ── Modell kompilieren (Lernstrategie festlegen) ──
-        energy_model.compile_model()
+            # ── Modell kompilieren (Lernstrategie festlegen) ──
+            energy_model.compile_model()
 
-        # ── Zusammenfassung anzeigen ──
-        energy_model.show_summary()
+            # ── Zusammenfassung anzeigen ──
+            energy_model.show_summary()
 
-        # ── Training starten ──
-        print("\nStarte Training...")
-        history = energy_model.train_model(
-            X_train, y_train,
-            X_val, y_val,
-            epochs=EPOCHS,
-            batch_size=BATCH_SIZE,
-            patience=PATIENCE,
-            min_delta=MIN_DELTA,
-            use_early_stop=USE_EARLY_STOP,
-        )
+            # ── Training starten ──
+            print("\nStarte Training...")
+            history = energy_model.train_model(
+                X_train, y_train,
+                X_val, y_val,
+                epochs=EPOCHS,
+                batch_size=BATCH_SIZE,
+                patience=PATIENCE,
+                min_delta=MIN_DELTA,
+                use_early_stop=USE_EARLY_STOP,
+            )
 
-        # Modell speichern für später
-        energy_model.save_model(MODEL_PATH)
+            # ── Modell und Trainingsverlauf speichern ──
+            # save_model: speichert Architektur, Gewichte und Optimizer als .keras Datei
+            # save_training_history: speichert Loss/MAE pro Epoch als CSV für spätere Vergleiche
+            energy_model.save_model(MODEL_PATH)
+            energy_model.save_training_history()
 
-        # ── Trainingsverlauf plotten ──
-        plotter.plot_training_history(history)
-    
+            # ── Trainingsverlauf plotten ──
+            plotter.plot_training_history(history)
+
     else:
         # ── Gespeichertes Modell laden ──
+        # Kein build/compile nötig — load_model lädt alles aus der Datei
+        # Das Modell ist sofort einsatzbereit für Vorhersagen
         energy_model.load_model(MODEL_PATH)
 
-        # ── Vorhersagen generieren ── 
-        predictions_norm = energy_model.predict(X_test)
+        # model_name setzen, damit save_predictions den Dateinamen
+        # aus den Parametern zusammenbauen kann
+        # Beim Training wird model_name in save_training_history() gesetzt,
+        # beim Laden müssen wir es manuell machen
+        energy_model.model_name = (
+            f"dense_{energy_model.neurons_l1}_{energy_model.neurons_l2}"
+            f"_lr{energy_model.learning_rate}"
+            f"_f{energy_model.n_features}"
+        )
 
-        # ── Vorhersagen und echte Werte zurück in Originalskala transformieren ──
-        predictions_real = parser.data_rücknormirung(predictions_norm)
-        y_test_real = parser.data_rücknormirung(y_test)
+    # ── Vorhersagen generieren ──
+    # predict() schickt alle Testsequenzen durch das Netzwerk
+    # Ergebnis ist noch normalisiert (zwischen 0 und 1)
+    predictions_norm = energy_model.predict(X_test)
+
+    # ── Vorhersagen und echte Werte zurück in Originalskala transformieren ──
+    # data_rücknormirung rechnet mit dem Scaler zurück in echte kWh-Werte
+    # parser.scaler hat die Min/Max-Werte vom Training gespeichert
+    predictions_real = parser.data_rücknormirung(predictions_norm)
+    y_test_real = parser.data_rücknormirung(y_test)
+
+    # ── Vorhersagen speichern ──
+    # Speichert echte Werte und Vorhersagen als .npz Datei
+    # Wird immer ausgeführt — egal ob frisch trainiert oder geladen
+    # So können die Ergebnisse verschiedener Modelle später verglichen werden
+    energy_model.save_predictions(y_test_real, predictions_real)
 
 
-        # ── Vorhersage für ein bestimmtes Datum plotten ──
-        plotter.plot_prediction(y_test_real, predictions_real, start_date="2025-06-15 14:00", timestamps=parser.test_timestamps, lookback=LOOKBACK, )
+    # # ── Vorhersage für ein bestimmtes Datum plotten ──
+    # plotter.plot_prediction(y_test_real, predictions_real, start_date="2025-06-15 14:00", timestamps=parser.test_timestamps, lookback=LOOKBACK, )
 
-        # ── Vorhersage über mehrere Monate plotten ──
-        plotter.plot_predictions_months(y_test_real, predictions_real, timestamps=parser.test_timestamps, lookback=LOOKBACK,)
+    # # ── Vorhersage über mehrere Monate plotten ──
+    # plotter.plot_predictions_months(y_test_real, predictions_real, timestamps=parser.test_timestamps, lookback=LOOKBACK,)
 
-        # ── Vorhersage über eine Woche plotten ──
-        plotter.plot_prediction_week(y_test_real, predictions_real, timestamps=parser.test_timestamps, start_date="2025-06-02", lookback=LOOKBACK, )
+    # # ── Vorhersage über eine Woche plotten ──
+    # plotter.plot_prediction_week(y_test_real, predictions_real, timestamps=parser.test_timestamps, start_date="2025-06-02", lookback=LOOKBACK, )
 
-        # ── Vorhersage über mehrere Wochen und Jahre plotten ──
-        plotter.plot_prediction_weeks_year(y_test_real, predictions_real, timestamps=parser.test_timestamps, lookback=LOOKBACK,)
+    # # ── Vorhersage über mehrere Wochen und Jahre plotten ──
+    # plotter.plot_prediction_weeks_year(y_test_real, predictions_real, timestamps=parser.test_timestamps, lookback=LOOKBACK,)

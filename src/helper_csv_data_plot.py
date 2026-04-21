@@ -1,7 +1,25 @@
+import os
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
+# ===================== HIER ANPASSEN =====================
+DATEIEN = {
+    "2021": r"C:\data\workspace\swiss-energy-forecast\raw_data\EnergieUebersichtCH-2021.csv",
+    "2022": r"C:\data\workspace\swiss-energy-forecast\raw_data\EnergieUebersichtCH-2022.csv",
+}
+
+# Welche Spalten aus welcher Datei plotten: (name, [spalten])
+QUELLEN = [
+    ("2021", [0, 1]),
+    ("2022", [0, 1]),
+]
+
+AVERAGE = "1W"              # None = Rohdaten, "1h", "1D", "1W", "1M"
+VON = None                  # Startdatum, z.B. "01.01.2021" (None = ab Anfang)
+BIS = None                  # Enddatum  (None = bis Ende)
+# =========================================================
 
 class CSVPlotter:
     """Liest CSV-Dateien ein und plottet ausgewählte Spalten."""
@@ -364,27 +382,234 @@ class CSVPlotter:
                 # Format: 2025-01-15
                 ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
 
+    def load_training_histories(self, path="results"):
+        """Lädt alle gespeicherten Trainingsverläufe aus einem Ordner.
+        
+        Args:
+            path: Ordner mit den CSV-Dateien (default: "results")
+        
+        Returns:
+            Dictionary: {modellname: DataFrame}
+        """
+        histories = {}
+        for file in sorted(os.listdir(path)):
+            if file.startswith("history_") and file.endswith(".csv"):
+                # "history_dense_128_64_lr0.001_f7.csv" → "dense_128_64_lr0.001_f7"
+                name = file.replace("history_", "").replace(".csv", "")
+                df = pd.read_csv(os.path.join(path, file), index_col="epoch")
+                histories[name] = df
+                print(f"Geladen: {name}")
+        return histories
 
-# ===================== HIER ANPASSEN =====================
-DATEIEN = {
-    "2021": r"C:\data\workspace\swiss-energy-forecast\raw_data\EnergieUebersichtCH-2021.csv",
-    "2022": r"C:\data\workspace\swiss-energy-forecast\raw_data\EnergieUebersichtCH-2022.csv",
-}
+    def load_predictions(self, path="results"):
+        """Lädt alle gespeicherten Vorhersagen aus einem Ordner.
+        
+        Args:
+            path: Ordner mit den npz-Dateien (default: "results")
+        
+        Returns:
+            Dictionary: {modellname: {"y_real": array, "y_pred": array}}
+        """
 
-# Welche Spalten aus welcher Datei plotten: (name, [spalten])
-QUELLEN = [
-    ("2021", [0, 1]),
-    ("2022", [0, 1]),
-]
+        predictions = {}
+        for file in sorted(os.listdir(path)):
+            if file.startswith("predictions_") and file.endswith(".npz"):
+                name = file.replace("predictions_", "").replace(".npz", "")
+                data = np.load(os.path.join(path, file))
+                predictions[name] = {
+                    "y_real": data["y_real"],
+                    "y_pred": data["y_pred"],
+                }
+                print(f"Geladen: {name}")
+        return predictions
+    
+    def plot_compare_training(self, histories):
+        """Plottet Trainingsverläufe mehrerer Modelle zum Vergleich.
+        
+        Args:
+            histories: Dictionary von load_training_histories()
+                       {modellname: DataFrame mit loss, val_loss, mae, val_mae}
+        """
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-AVERAGE = "1W"              # None = Rohdaten, "1h", "1D", "1W", "1M"
-VON = None                  # Startdatum, z.B. "01.01.2021" (None = ab Anfang)
-BIS = None                  # Enddatum  (None = bis Ende)
-# =========================================================
+        for name, df in histories.items():
+            # Linie zeichnen und Farbe merken
+            line_loss = axes[0].plot(df["val_loss"], label=name)[0]
+            line_mae = axes[1].plot(df["val_mae"], label=name)[0]
+
+            # Minimum finden: Index (Epoch) und Wert
+            min_loss_idx = df["val_loss"].idxmin()
+            min_loss_val = df["val_loss"].min()
+            min_mae_idx = df["val_mae"].idxmin()
+            min_mae_val = df["val_mae"].min()
+
+            # Punkt in gleicher Farbe wie die Linie einzeichnen
+            axes[0].plot(min_loss_idx, min_loss_val, "o",
+                        color=line_loss.get_color(), markersize=8,
+                        label=f"Minimum")
+            axes[1].plot(min_mae_idx, min_mae_val, "o",
+                        color=line_mae.get_color(), markersize=8,
+                        label=f"Minimum")
+
+        axes[0].set_title("Validation Loss (MSE)")
+        axes[0].set_xlabel("Epoch")
+        axes[0].set_ylabel("Loss")
+        axes[0].legend(fontsize=7)
+        axes[0].grid(True, which="major", linestyle="-", alpha=0.3)
+
+        axes[1].set_title("Validation MAE")
+        axes[1].set_xlabel("Epoch")
+        axes[1].set_ylabel("MAE")
+        axes[1].legend(fontsize=7)
+        axes[1].grid(True, which="major", linestyle="-", alpha=0.3)
+
+        plt.suptitle("Modellvergleich — Trainingsverlauf", fontsize=14)
+        plt.tight_layout()
+        plt.show()
+
+    def plot_compare_predictions(self, predictions, timestamps, start_date, lookback=168):
+        """Plottet Vorhersagen mehrerer Modelle für den gleichen Tag zum Vergleich.
+        
+        Args:
+            predictions: Dictionary von load_predictions()
+                         {modellname: {"y_real": array, "y_pred": array}}
+            timestamps:  pandas DatetimeIndex der Testdaten
+            start_date:  Datum als String, z.B. "2025-06-15 14:00"
+            lookback:    Lookback-Wert des Modells
+        """
+        fig, ax = plt.subplots(figsize=(14, 6))
+
+        # Datum → Index berechnen
+        target = pd.to_datetime(start_date)
+        pos = timestamps.searchsorted(target)
+        index = pos - lookback
+
+        # x-Achse: 24 Stunden ab dem Datum
+        stunden = pd.date_range(target, periods=24, freq="h")
+
+        # Echte Werte nur einmal plotten (sind bei allen Modellen gleich)
+        # Nehme y_real vom ersten Modell
+        first_model = list(predictions.values())[0]
+        real = first_model["y_real"][index]
+        ax.plot(stunden, real, label="Gemessene Werte",
+                color="black", linewidth=2, marker="o", markersize=4)
+
+        # Vorhersage jedes Modells in eigener Farbe
+        for name, pred_data in predictions.items():
+            pred = pred_data["y_pred"][index]
+            ax.plot(stunden, pred, linewidth=2, alpha=0.8, marker="x", markersize=4,
+                    label=f"{name}")
+
+        ax.set_title(f"Modellvergleich — Vorhersage für {target.strftime('%d.%m.%Y %H:%M')}")
+        ax.set_xlabel("Zeit")
+        ax.set_ylabel("Energieverbrauch (kWh)")
+        ax.legend(fontsize=7)
+        self._style_axis(ax, show_time=True)
+        ax.tick_params(axis="x", rotation=45)
+
+        plt.tight_layout()
+        plt.show()
+
+    def plot_compare_predictions_week(self, predictions, timestamps, start_date, lookback=168):
+        """Plottet eine Woche mit Vorhersagen aller Modelle zum Vergleich.
+        
+        Args:
+            predictions: Dictionary von load_predictions()
+            timestamps:  pandas DatetimeIndex der Testdaten
+            start_date:  Startdatum der Woche, z.B. "2025-06-02"
+            lookback:    Lookback-Wert des Modells
+        """
+        fig, ax = plt.subplots(figsize=(16, 6))
+
+        start = pd.to_datetime(start_date)
+        start_pos = timestamps.searchsorted(start)
+        start_index = start_pos - lookback
+
+        # Echte Werte: 7 Tage zusammensetzen (nur einmal)
+        first_model = list(predictions.values())[0]
+        real_week = []
+        for day in range(7):
+            real_week.extend(first_model["y_real"][start_index + day * 24])
+
+        week_timestamps = pd.date_range(start, periods=168, freq="h")
+
+        ax.plot(week_timestamps, real_week, label="Gemessene Werte",
+                color="black", linewidth=2)
+
+        # Für jedes Modell: 7 Tagesvorhersagen in gleicher Farbe
+        for name, pred_data in predictions.items():
+            # Erste Vorhersage plotten MIT Label für Legende
+            day_index = start_index
+            pred = pred_data["y_pred"][day_index]
+            day_start = start
+            pred_timestamps = pd.date_range(day_start, periods=24, freq="h")
+            line = ax.plot(pred_timestamps, pred, linewidth=1.5, alpha=0.7,
+                          label=f"{name}")[0]
+            color = line.get_color()
+
+            # Restliche 6 Tage in gleicher Farbe, OHNE Label
+            for day in range(1, 7):
+                day_index = start_index + day * 24
+                pred = pred_data["y_pred"][day_index]
+                day_start = start + pd.Timedelta(hours=day * 24)
+                pred_timestamps = pd.date_range(day_start, periods=24, freq="h")
+                ax.plot(pred_timestamps, pred, linewidth=1.5, alpha=0.7,
+                        color=color)
+
+        ax.set_title(f"Modellvergleich — Woche ab {start.strftime('%d.%m.%Y')}")
+        ax.set_xlabel("Zeit")
+        ax.set_ylabel("Energieverbrauch (kWh)")
+        ax.legend(fontsize=7, loc="upper right")
+        self._style_axis(ax, show_time=False)
+        ax.tick_params(axis="x", rotation=45)
+
+        plt.tight_layout()
+        plt.show()
+    
+    
+
 
 
 if __name__ == "__main__":
     p = CSVPlotter()
+
+        # ── Vorhersagen vergleichen ──
+    predictions = p.load_predictions("results")
+    
+    # Alle gespeicherten Ergebnisse laden und vergleichen
+    histories = p.load_training_histories("results")
+    p.plot_compare_training(histories)
+
+    if predictions:
+        # Parser kurz laufen lassen um Timestamps zu holen
+        from helper_data_input_parser import DataInputParser
+
+        parser = DataInputParser()
+        parser.load_csv_data([
+            "EnergieUebersichtCH-2021",
+            "EnergieUebersichtCH-2022",
+            "EnergieUebersichtCH-2023",
+            "EnergieUebersichtCH-2024",
+            "EnergieUebersichtCH-2025",
+        ])
+        parser.extract_colum("Summe endverbrauchte Energie Regelblock Schweiz")
+        df_hourly = parser.avg("h")
+        _, _, test = parser.split_data(df_hourly)
+        timestamps = test.index
+
+        # Alle Modelle im gleichen Plot vergleichen
+        p.plot_compare_predictions(
+            predictions, timestamps,
+            start_date="2025-06-15 14:00",
+            lookback=168,
+        )
+
+        p.plot_compare_predictions_week(
+            predictions, timestamps,
+            start_date="2025-06-02",
+            lookback=168,
+        )
+
 
     # Alle Dateien laden
     for name, path in DATEIEN.items():
