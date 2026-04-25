@@ -394,7 +394,7 @@ class DataInputParser:
         return X_train, y_train, X_val, y_val, X_test, y_test
 
 if __name__ == "__main__":
-    # Lilste der Dateien, die geladen werden sollen (ohne .csv-Endung)
+    # Liste der Dateien, die geladen werden sollen (ohne .csv-Endung)
     FILE_LIST = [
         "EnergieUebersichtCH-2021",
         "EnergieUebersichtCH-2022",

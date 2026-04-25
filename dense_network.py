@@ -334,7 +334,7 @@ if __name__ == "__main__":
     MIN_DELTA = 0.0001  # Mindestverbesserung, damit EarlyStopping nicht abbricht
     USE_EARLY_STOP = True # Ob EarlyStopping aktiviert werden soll (Standard: True)
     
-    TRAIN_NEW_MODEL = False          # True = neues Modell trainieren, False = gespeichertes Modell laden
+    TRAIN_NEW_MODEL = True          # True = neues Modell trainieren, False = gespeichertes Modell laden
     MODEL_PATH = "model_dense.keras" # Pfad zum Speichern/Laden des Modells
 
     PREDICTION_DATE = "2025-06-15 14:00" # Datum für die Vorhersage (nur relevant, wenn TRAIN_NEW_MODEL=False)
@@ -429,13 +429,13 @@ if __name__ == "__main__":
 
 
     # # ── Vorhersage für ein bestimmtes Datum plotten ──
-    # plotter.plot_prediction(y_test_real, predictions_real, start_date="2025-06-15 14:00", timestamps=parser.test_timestamps, lookback=LOOKBACK, )
+    plotter.plot_prediction(y_test_real, predictions_real, start_date="2025-06-15 14:00", timestamps=parser.test_timestamps, lookback=LOOKBACK, )
 
     # # ── Vorhersage über mehrere Monate plotten ──
-    # plotter.plot_predictions_months(y_test_real, predictions_real, timestamps=parser.test_timestamps, lookback=LOOKBACK,)
+    plotter.plot_predictions_months(y_test_real, predictions_real, timestamps=parser.test_timestamps, lookback=LOOKBACK,)
 
     # # ── Vorhersage über eine Woche plotten ──
-    # plotter.plot_prediction_week(y_test_real, predictions_real, timestamps=parser.test_timestamps, start_date="2025-06-02", lookback=LOOKBACK, )
+    plotter.plot_prediction_week(y_test_real, predictions_real, timestamps=parser.test_timestamps, start_date="2025-06-02", lookback=LOOKBACK, )
 
     # # ── Vorhersage über mehrere Wochen und Jahre plotten ──
-    # plotter.plot_prediction_weeks_year(y_test_real, predictions_real, timestamps=parser.test_timestamps, lookback=LOOKBACK,)
+    plotter.plot_prediction_weeks_year(y_test_real, predictions_real, timestamps=parser.test_timestamps, lookback=LOOKBACK,)

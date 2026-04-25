@@ -174,8 +174,10 @@ class CSVPlotter:
             stunden = range(1, len(real) + 1)
             ax.set_xlabel("Stunde")
 
+        mae, rmse = self._calc_metrics(real, pred)
+
         ax.plot(stunden, real, label="Gemessene Werte", marker="o")
-        ax.plot(stunden, pred, label="Vorhersage", marker="x")
+        ax.plot(stunden, pred, label=f"Vorhersage  |  MAE: {mae:,.0f} kWh  |  RMSE: {rmse:,.0f} kWh", marker="x")
 
         ax.set_title(f"Vorhersage vs. Realität ({start_date or f'Index {beispiel_index}'})")
         ax.set_ylabel("Energieverbrauch (kWh)")
@@ -227,9 +229,10 @@ class CSVPlotter:
             # x-Achse: 24 Stunden ab dem Datum
             stunden = pd.date_range(target, periods=len(real), freq="h")
 
+            mae, rmse = self._calc_metrics(real, pred)
             axes[i].plot(stunden, real, label="Gemessene Werte", marker="o", markersize=3)
             axes[i].plot(stunden, pred, label="Vorhersage", marker="x", markersize=3)
-            axes[i].set_title(target.strftime("%B %Y"))
+            axes[i].set_title(f"{target.strftime('%B %Y')}  |  MAE: {mae:,.0f}  |  RMSE: {rmse:,.0f} kWh")
             axes[i].legend(fontsize=7)
             self._style_axis(axes[i], show_time=True)
             axes[i].tick_params(axis="x", rotation=45, labelsize=7)
@@ -288,7 +291,9 @@ class CSVPlotter:
             ax.plot(pred_timestamps, pred, linewidth=2, alpha=0.7,
                     label=f"Vorhersage {day_start.strftime('%a %d.%m.')}")
 
-        ax.set_title(f"Wochenansicht ab {start.strftime('%d.%m.%Y')}")
+        mae, rmse = self._calc_metrics(np.array(real_week), np.concatenate([y_pred[start_index + d * 24] for d in range(7)]))
+
+        ax.set_title(f"Wochenansicht ab {start.strftime('%d.%m.%Y')}  |  MAE: {mae:,.0f}  |  RMSE: {rmse:,.0f} kWh")
         ax.set_xlabel("Zeit")
         ax.set_ylabel("Energieverbrauch (kWh)")
         ax.legend(fontsize=7, loc="upper right")
@@ -346,8 +351,11 @@ class CSVPlotter:
                 axes[i].plot(pred_timestamps, pred, linewidth=1.5, alpha=0.7,
                             label=f"Vorhersage {day_start.strftime('%a %d.%m.')}")
 
+            pred_week = np.concatenate([y_pred[start_index + d * 24] for d in range(7)])
+            mae, rmse = self._calc_metrics(np.array(real_week), pred_week)
+
             # Monatsname als Titel, z.B. "Januar 2025"
-            axes[i].set_title(start.strftime("%B %Y"), fontsize=10)
+            axes[i].set_title(f"{start.strftime('%B %Y')}  |  MAE: {mae:,.0f}  |  RMSE: {rmse:,.0f} kWh", fontsize=9)
             self._style_axis(axes[i], show_time=False)
             axes[i].tick_params(axis="x", rotation=45, labelsize=6)
             axes[i].tick_params(axis="y", labelsize=7)
@@ -358,6 +366,20 @@ class CSVPlotter:
         plt.subplots_adjust(top=0.93)
         plt.show()
     
+    def _calc_metrics(self, real, pred):
+        """Berechnet MAE und RMSE zwischen echten und vorhergesagten Werten.
+
+        Args:
+            real: numpy-Array mit echten Werten
+            pred: numpy-Array mit Vorhersagen
+
+        Returns:
+            Tuple (mae, rmse) als formatierte Strings in kWh
+        """
+        mae  = np.mean(np.abs(real - pred))
+        rmse = np.sqrt(np.mean((real - pred) ** 2))
+        return mae, rmse
+
     def _style_axis(self, ax, show_time=False):
         """Einheitliches Styling für alle Plots.
         
@@ -497,8 +519,9 @@ class CSVPlotter:
         # Vorhersage jedes Modells in eigener Farbe
         for name, pred_data in predictions.items():
             pred = pred_data["y_pred"][index]
+            mae, rmse = self._calc_metrics(real, pred)
             ax.plot(stunden, pred, linewidth=2, alpha=0.8, marker="x", markersize=4,
-                    label=f"{name}")
+                    label=f"{name}  |  MAE: {mae:,.0f}  |  RMSE: {rmse:,.0f} kWh")
 
         ax.set_title(f"Modellvergleich — Vorhersage für {target.strftime('%d.%m.%Y %H:%M')}")
         ax.set_xlabel("Zeit")
@@ -538,13 +561,19 @@ class CSVPlotter:
 
         # Für jedes Modell: 7 Tagesvorhersagen in gleicher Farbe
         for name, pred_data in predictions.items():
+            # Fehler über die ganze Woche berechnen
+            pred_week = []
+            for day in range(7):
+                pred_week.extend(pred_data["y_pred"][start_index + day * 24])
+            mae, rmse = self._calc_metrics(np.array(real_week), np.array(pred_week))
+
             # Erste Vorhersage plotten MIT Label für Legende
             day_index = start_index
             pred = pred_data["y_pred"][day_index]
             day_start = start
             pred_timestamps = pd.date_range(day_start, periods=24, freq="h")
             line = ax.plot(pred_timestamps, pred, linewidth=1.5, alpha=0.7,
-                          label=f"{name}")[0]
+                          label=f"{name}  |  MAE: {mae:,.0f}  |  RMSE: {rmse:,.0f} kWh")[0]
             color = line.get_color()
 
             # Restliche 6 Tage in gleicher Farbe, OHNE Label

@@ -33,7 +33,7 @@ class EnergyModelLSTM:
         # Hier nur auf None setzen, damit es als Attribut existiert
         self.model = None
 
-    def build_model(self):
+    def build_model(self, n_features=1):
         # Neues Sequential-Modell erstellen
         # Sequential = Schichten kommen nacheinander (wie eine Röhre)
         self.model = Sequential()
@@ -47,7 +47,7 @@ class EnergyModelLSTM:
         # einfach nebeneinander als flacher Vektor.
         # Beim LSTM behandelt Keras jeden der lookback Werte als eigenen
         # Zeitschritt, deshalb das extra ,1 am Ende.
-        self.model.add(Input(shape=(self.lookback, 1)))
+        self.model.add(Input(shape=(self.lookback, n_features)))
 
         # ── LSTM Layer 1 ──
         # LSTM(neurons_l1) → LSTM-Schicht mit neurons_l1 Einheiten.
@@ -125,10 +125,11 @@ class EnergyModelLSTM:
         ins Modell gehen. So bleibt die Pipeline identisch zum Dense-Netz.
         """
 
-        # Reshape: (n, lookback) → (n, lookback, 1)
-        # LSTM braucht eine Tiefendimension (features), auch wenn es nur 1 ist
-        X_train = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
-        X_val   = X_val.reshape((X_val.shape[0],   X_val.shape[1],   1))
+        # Reshape nur wenn nötig: (n, lookback) → (n, lookback, 1)
+        # Wenn X bereits 3D ist (z.B. mehrere Features), nichts tun
+        if X_train.ndim == 2:
+            X_train = X_train.reshape((X_train.shape[0], X_train.shape[1], 1))
+            X_val   = X_val.reshape((X_val.shape[0],   X_val.shape[1],   1))
 
         # Callback-Liste aufbauen
         callbacks = []
@@ -184,7 +185,8 @@ class EnergyModelLSTM:
         - predictions: numpy-Array mit Shape (Anzahl_Sequenzen, horizon)
         """
         # Reshape: (n, lookback) → (n, lookback, 1)
-        X_test = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
+        if X_test.ndim == 2:
+            X_test = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
 
         # model.predict() schickt alle Testsequenzen durch das Netzwerk
         # Jede Sequenz (168 Zeitschritte) rein → 24 Stunden Vorhersage raus
@@ -250,7 +252,7 @@ if __name__ == "__main__":
     HORIZON = 24        # 1 Tag vorhersagen
     NEURONS_L1 = 64     # Neuronen im ersten LSTM-Layer
     NEURONS_L2 = 32     # Neuronen im zweiten LSTM-Layer
-    EPOCHS = 20        # Wie oft das Modell ALLE Daten durchgeht
+    EPOCHS = 200        # Wie oft das Modell ALLE Daten durchgeht
     BATCH_SIZE = 32     # Wie viele Sequenzen gleichzeitig verarbeitet werden
     PATIENCE = 10       # Wie viele Epochen ohne Verbesserung bis EarlyStopping abbricht
     MIN_DELTA = 0.0001  # Mindestverbesserung, damit EarlyStopping nicht abbricht
@@ -279,7 +281,9 @@ if __name__ == "__main__":
     if TRAIN_NEW_MODEL:
 
         # ── Modell bauen (Architektur definieren) ──
-        energy_model.build_model()
+        # ── Anzahl Features ableiten ──
+        n_features = X_train.shape[2] if X_train.ndim == 3 else 1 
+        energy_model.build_model(n_features=n_features)
 
         # ── Modell kompilieren (Lernstrategie festlegen) ──
         energy_model.compile_model()
