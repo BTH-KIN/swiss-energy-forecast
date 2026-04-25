@@ -334,7 +334,7 @@ if __name__ == "__main__":
     MIN_DELTA = 0.0001  # Mindestverbesserung, damit EarlyStopping nicht abbricht
     USE_EARLY_STOP = True # Ob EarlyStopping aktiviert werden soll (Standard: True)
     
-    TRAIN_NEW_MODEL = True          # True = neues Modell trainieren, False = gespeichertes Modell laden
+    TRAIN_NEW_MODEL = False          # True = neues Modell trainieren, False = gespeichertes Modell laden
     MODEL_PATH = "model_dense.keras" # Pfad zum Speichern/Laden des Modells
 
     PREDICTION_DATE = "2025-06-15 14:00" # Datum für die Vorhersage (nur relevant, wenn TRAIN_NEW_MODEL=False)
