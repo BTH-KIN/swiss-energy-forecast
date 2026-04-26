@@ -4,6 +4,8 @@ os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 # TensorFlow-Log-Level auf "2" setzen, um nur Fehler anzuzeigen
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
+
+haslllo
 import pandas as pd
 import numpy as np
 
